@@ -1,0 +1,351 @@
+openapi: 3.1.0
+info:
+  title: DAL Worker Transport v1
+  version: 1.0.0
+  description: >
+    跨机器 Worker Transport 合同（thin-http）。这是 ECS Dev Workflow Service 与 Home Mac
+    Worker 之间的**传输层**：worker 出站长轮询 claim / heartbeat / checkpoint / result，ECS 持有
+    feature/run 业务状态唯一权威。本文件不重新冻结 DAL 已冻结的 feature/plan/task/run 状态机、
+    CAS、approval 或 `dal.transition-receipt/1.0` 语义；`job_id`/`lease_epoch` 是传输层的 fencing
+    字段，与业务层 `OP-LEASE-001`/`OP-EPOCH-001` 的 capability/approval/lease epoch 相互独立。
+
+    固定安全规则（冻结，DWS 实现必须满足）：
+    - Worker 使用独立机器身份 + 短期 access token，不复用 iPhone device token；token 绑定
+      worker_id、capabilities 与 expiry。token 经 `/enroll` 响应的 TLS body 返回一次，不进入日志、
+      不由任何其他端点回显。
+    - enrollment/revocation 由 ECS 控制：`/enroll` 不是自助端点——调用方必须持有 ECS 部署侧下发的
+      enrollment secret（`X-Enrollment-Secret` 头，constant-time 比对；缺失/错误 → 401），
+       revocation 是经 auth 403（`worker_revoked`）fail-closed 观测的，已吊销 worker 不能重新注册。
+    - 仅 HTTPS；生产 endpoint、Host 与 path 固定；敏感 header（含 token、enrollment secret、
+      body_digest）不进入日志。
+    - 每个请求绑定 request_id、job_id、lease_epoch 与 body_digest（`X-Transport-Body-Digest`
+      header = **接收到的原始请求体字节**的 sha256，64 hex，逐字节比对，不匹配即 400，绝不静默修复）；
+      旧 lease_epoch fail-closed（409，零写——fencing 与写入在同一事务内，stale 预读不算数）。
+      request_id 的「绑定」即经 body_digest 的防篡改承载，DWS 不另行持久化 request_id。
+    - artifact 有 size/count/retention 上限；checkpoint/diff/log 分开标敏感级别（`sensitivity`）。
+    - capabilities 在 v1 是**描述性注册**（闭合词汇表，未知值 403），不参与端点授权；端点授权仅依赖
+      机器身份（enrollment + token）。WorkerToken 失败（缺失/无效/过期/未知 worker/已吊销）→
+      401/403 fail-closed。
+    - ECS 接受 result 后才推进全局状态；provider/Worker 的 `success` 文本无权推进。
+    - 错误响应统一为闭合 `Error` 信封（schema_version/code/detail）；body 非闭合形状（含
+      schema_version 不符）即 `Invalid` 400。
+
+    失败语义（冻结，adversarial fixtures 覆盖）：expired epoch、duplicate same result（幂等 replay）、
+    duplicate conflicting result（409 不覆盖）、checkpoint tamper（digest 不匹配 400）、cancel race、
+    response loss（replay 幂等）、oversized artifact（413）、unknown capability（403）。
+    progress 由 checkpoint `sequence` 表达；heartbeat 响应是 cancel observation 通道
+    （revoke 不经 heartbeat，由 auth 403 fail-closed 观测）。
+    clock skew / token expiry / ECS restart / Worker restart 由 lease epoch + deadline + token expiry
+    三处 fencing 承载，无独立端点。
+servers:
+  - url: https://agent.example.invalid/dal/transport/v1
+    description: ECS Dev Workflow Service（生产，pinned；占位，实际以部署配置为准）
+security:
+  - WorkerToken: []
+tags:
+  - name: transport
+paths:
+  /enroll:
+    post:
+      summary: Worker 注册机器身份与 capability，换取短期 access token（operator-gated）
+      security:
+        - EnrollmentSecret: []
+      parameters:
+        - $ref: "#/components/parameters/BodyDigest"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EnrollRequest" }
+      responses:
+        "200":
+          description: 已注册；token 值经本响应 TLS body 返回一次，不回显日志
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EnrollResponse" }
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "401":
+          $ref: "#/components/responses/EnrollmentSecretInvalid"
+        "403":
+          $ref: "#/components/responses/UnknownCapability"
+  /health:
+    get:
+      summary: 健康检查 + kill switch / endpoint identity 探针（无认证，不读 credential）
+      security: []
+      responses:
+        "200":
+          description: 含 kill switch 状态与 endpoint identity；不读取或回显 credential 内容
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [schema_version, kill_switch]
+                properties:
+                  schema_version: { const: "dal.worker-transport/1.0" }
+                  kill_switch: { type: boolean }
+  /jobs/claim:
+    post:
+      summary: 出站 poll/claim 下一个 pending job（CAS，双工唯一赢家）
+      description: >
+        1.0 修订（DAL-R06）：服务端在 CAS claim 之前先回收过期 lease。lease 回收是 ECS
+        权威，远程 Worker 既没有回收端点也不得自行回收；本端点是唯一的回收触发点，
+        attempt 预算由服务端 max_attempts 决定，耗尽即终态 expired。
+      parameters:
+        - $ref: "#/components/parameters/BodyDigest"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [schema_version, request_id, worker_id]
+              properties:
+                schema_version: { const: "dal.worker-transport/1.0" }
+                request_id: { type: string, minLength: 1, maxLength: 256 }
+                worker_id: { type: string, minLength: 1, maxLength: 256 }
+      responses:
+        "200":
+          description: 已认领一个 job
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClaimResponse" }
+        "204":
+          description: 无 pending job（空 body）
+        "403":
+          $ref: "#/components/responses/Stale"
+        "503":
+          description: kill switch 激活，停止派发新 job（Error 信封 code=kill_switch_active）
+  /jobs/{job_id}/heartbeat:
+    post:
+      summary: 刷新 lease；响应在同一 heartbeat 内回传 cancel 信号
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/BodyDigest"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HeartbeatRequest" }
+      responses:
+        "200":
+          description: lease 已刷新；cancel_requested 告知 worker 停止（revoke 不经此通道，由 auth 403 观测）
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [schema_version, cancel_requested]
+                properties:
+                  schema_version: { const: "dal.worker-transport/1.0" }
+                  cancel_requested: { type: boolean }
+        "409":
+          $ref: "#/components/responses/Stale"
+  /jobs/{job_id}/checkpoint:
+    post:
+      summary: 上传 checkpoint 元数据 + content-addressed artifact 引用
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/BodyDigest"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CheckpointRequest" }
+      responses:
+        "200":
+          description: checkpoint 已记录（ECS 侧 artifact/receipt 为全局恢复证据；同 sequence 相同 digest 幂等）
+        "400":
+          $ref: "#/components/responses/Invalid"
+        "409":
+          description: Stale（旧 epoch/失主，零写）或 Conflict（同 sequence 不同 digest，不覆盖）
+        "413":
+          $ref: "#/components/responses/Oversized"
+  /jobs/{job_id}/result:
+    post:
+      summary: 提交结果（幂等 replay；不同 digest 冲突 fail-closed）
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/BodyDigest"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResultRequest" }
+      responses:
+        "200":
+          description: 结果已接受（或幂等 replay 返回原 receipt）
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResultResponse" }
+        "409":
+          $ref: "#/components/responses/Conflict"
+components:
+  parameters:
+    BodyDigest:
+      name: X-Transport-Body-Digest
+      in: header
+      required: true
+      description: 接收到的原始请求体字节（逐字节，未经任何规范化）的 sha256（64 hex）。每请求必带的反篡改 fencing；不匹配即 400。
+      schema: { type: string, pattern: "^[0-9a-f]{64}$" }
+  securitySchemes:
+    WorkerToken:
+      type: http
+      scheme: bearer
+      description: >
+        Worker 短期 access token；由 ECS 在 enroll 后签发，绑定 worker_id、capabilities 与 expiry；
+        不复用 iPhone device token。token 值不得进入日志或回显。
+    EnrollmentSecret:
+      type: apiKey
+      in: header
+      name: X-Enrollment-Secret
+      description: >
+        ECS 部署侧持有的 enrollment secret，把 /enroll 从自助端点变为 operator-gated；
+        constant-time 比对，缺失或错误即 401。secret 值不得进入日志。
+  responses:
+    Invalid:
+      description: 请求体不闭合 / 字段非法 / artifact digest 不匹配
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    EnrollmentSecretInvalid:
+      description: enrollment secret 缺失或错误（/enroll 非自助端点）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    UnknownCapability:
+      description: capability 不在闭合枚举内
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Stale:
+      description: lease_epoch 过期 / worker 失主 / 已 revoke（旧 epoch fail-closed，零写）
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Oversized:
+      description: artifact 超过 size/count 上限
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: 同一 job 用不同 result_sha256 重放，不覆盖
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    EnrollRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, request_id, worker_id, machine_id, capabilities]
+      properties:
+        schema_version: { const: "dal.worker-transport/1.0" }
+        request_id: { type: string, minLength: 1, maxLength: 256 }
+        worker_id: { type: string, minLength: 1, maxLength: 256 }
+        machine_id: { type: string, minLength: 1, maxLength: 256 }
+        capabilities:
+          type: array
+          minItems: 1
+          items: { type: string, minLength: 1 }
+          uniqueItems: true
+    EnrollResponse:
+      type: object
+      additionalProperties: false
+      required: [schema_version, worker_id, capabilities, token, token_expires_at]
+      properties:
+        schema_version: { const: "dal.worker-transport/1.0" }
+        worker_id: { type: string, minLength: 1, maxLength: 256 }
+        capabilities:
+          type: array
+          items: { type: string, enum: [coding, verification, checkpoint] }
+        token: { type: string, minLength: 1 }
+        token_expires_at:
+          type: integer
+          minimum: 1
+          description: epoch 秒（与 token payload 的 exp 一致）
+    ClaimResponse:
+      type: object
+      additionalProperties: false
+      required:
+        [schema_version, job_id, feature_id, repository_id, base_sha, branch_name,
+         toolchain_ref, lease_epoch, attempt, deadline]
+      properties:
+        schema_version: { const: "dal.worker-transport/1.0" }
+        job_id: { type: string, minLength: 1, maxLength: 256 }
+        # 1.0 修订（DAL-R06）：feature_id 由 ECS 下发，不再由 worker 从 branch_name 反解。
+        # worktree 路径、checkpoint 目录和 checkpoint 绑定都以它为准；worker 仍校验
+        # branch_name == "codex/feature-{feature_id}"，不一致 fail closed。
+        feature_id: { type: string, minLength: 1, maxLength: 256 }
+        repository_id: { type: string, minLength: 1 }
+        base_sha: { type: string, pattern: "^[0-9a-f]{40}$" }
+        branch_name: { type: string, minLength: 1 }
+        toolchain_ref: { type: string, minLength: 1 }
+        lease_epoch: { type: integer, minimum: 0 }
+        attempt: { type: integer, minimum: 0 }
+        deadline: { type: string, format: date-time }
+    HeartbeatRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, request_id, job_id, worker_id, lease_epoch]
+      properties:
+        schema_version: { const: "dal.worker-transport/1.0" }
+        request_id: { type: string, minLength: 1, maxLength: 256 }
+        job_id: { type: string, minLength: 1, maxLength: 256 }
+        worker_id: { type: string, minLength: 1, maxLength: 256 }
+        lease_epoch: { type: integer, minimum: 0 }
+    CheckpointRequest:
+      type: object
+      additionalProperties: false
+      required:
+        [schema_version, request_id, job_id, worker_id, lease_epoch, sequence,
+         artifact_sha256, artifact_size_bytes, changed_files, sensitivity]
+      properties:
+        schema_version: { const: "dal.worker-transport/1.0" }
+        request_id: { type: string, minLength: 1, maxLength: 256 }
+        job_id: { type: string, minLength: 1, maxLength: 256 }
+        worker_id: { type: string, minLength: 1, maxLength: 256 }
+        lease_epoch: { type: integer, minimum: 0 }
+        sequence: { type: integer, minimum: 0 }
+        artifact_sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+        artifact_size_bytes: { type: integer, minimum: 1, maximum: 104857600 }
+        changed_files:
+          type: array
+          maxItems: 10000
+          items: { type: string, minLength: 1, maxLength: 512 }
+        sensitivity: { type: string, enum: [checkpoint, diff, log] }
+    ResultRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, request_id, job_id, worker_id, lease_epoch, result_sha256, state]
+      properties:
+        schema_version: { const: "dal.worker-transport/1.0" }
+        request_id: { type: string, minLength: 1, maxLength: 256 }
+        job_id: { type: string, minLength: 1, maxLength: 256 }
+        worker_id: { type: string, minLength: 1, maxLength: 256 }
+        lease_epoch: { type: integer, minimum: 0 }
+        result_sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+        state: { type: string, enum: [succeeded, failed] }
+        last_error:
+          type: [string, "null"]
+          minLength: 1
+          maxLength: 4096
+    ResultResponse:
+      type: object
+      additionalProperties: false
+      required: [schema_version, job_id, result_sha256, receipt_id, replay]
+      properties:
+        schema_version: { const: "dal.worker-transport/1.0" }
+        job_id: { type: string, minLength: 1, maxLength: 256 }
+        result_sha256: { type: string, pattern: "^[0-9a-f]{64}$" }
+        receipt_id: { type: string, minLength: 1 }
+        replay: { type: boolean }
+    Error:
+      type: object
+      additionalProperties: false
+      required: [schema_version, code, detail]
+      properties:
+        schema_version: { const: "dal.worker-transport/1.0" }
+        code: { type: string, minLength: 1 }
+        detail: { type: string }

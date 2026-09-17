@@ -1,0 +1,585 @@
+{
+  "authority_sha256": "e12bddfbb69228e605da0b3d7b636f7566d9158deb41f185e86869e618723711",
+  "authority_version": "1.0",
+  "frozen_fixture_catalog_sha256": "9998edcb7ea88c2e178d9a72a840b164c7d909695d829b8db9e31a3965ac566b",
+  "frozen_manifest_sha256": "8ae5e63e323cb663be168ea42824e23a7bc72634d60b472b64807f77e7dc1b0d",
+  "frozen_oracle_catalog_sha256": "265c691829c2f3c8ee10713fd431de1716aef4bb24b9fcf0455c1e7f0e575fa8",
+  "frozen_registry_sha256": "2806ee32b9398377dc3d6fcf52b6a582fdedba8c8d7675fe20a11bcb76ad82d1",
+  "frozen_request_schema_sha256": "d06619654efe0543f68565e4e819dcb5129a8ed88a1e6bbf8c8429b381a2247d",
+  "frozen_response_schema_sha256": "e0bc2cb05f3f8dd2c69e87b205c0de0b45ef47953fdc45d3e85d52782a346b6e",
+  "oracle_entries": {
+    "dal.routing.oracle/DAL-T-ROUTING-CONTRACT-001/classifier_digest_drift/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "audit",
+        "business_event",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox",
+        "transition_receipt"
+      ],
+      "coverage_ref": "BLK-POLICY-CLASSIFIER--coding",
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_failure_class": "policy_failure",
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "POLICY_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_handoff_state": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_result_status": "blocked",
+      "expected_state_trace": [
+        "coding",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "classifier_digest_drift"
+    },
+    "dal.routing.oracle/DAL-T-ROUTING-CONTRACT-001/classifier_modified/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "audit",
+        "business_event",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox",
+        "transition_receipt"
+      ],
+      "coverage_ref": "BLK-POLICY-CLASSIFIER--coding",
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_failure_class": "policy_failure",
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "POLICY_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_handoff_state": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_result_status": "blocked",
+      "expected_state_trace": [
+        "coding",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "classifier_modified"
+    },
+    "dal.routing.oracle/DAL-T-ROUTING-CONTRACT-001/classifier_replaced/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "audit",
+        "business_event",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox",
+        "transition_receipt"
+      ],
+      "coverage_ref": "BLK-POLICY-CLASSIFIER--coding",
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_failure_class": "policy_failure",
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "POLICY_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_handoff_state": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_result_status": "blocked",
+      "expected_state_trace": [
+        "coding",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "classifier_replaced"
+    },
+    "dal.routing.oracle/DAL-T-ROUTING-CONTRACT-001/fallback_unconfigured/G3/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK-UNCONFIGURED--coding",
+      "expected_event_trace": [],
+      "expected_failure_class": null,
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_handoff_state": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_result_status": "no_fallback_route",
+      "expected_state_trace": [
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "fallback_unconfigured"
+    },
+    "dal.routing.oracle/DAL-T-ROUTING-CONTRACT-001/primary_auth/G3/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK-ALLOWED-AUTH--coding",
+      "expected_event_trace": [],
+      "expected_failure_class": null,
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_handoff_state": {
+        "base_sha": "0123456789abcdef0123456789abcdef01234567",
+        "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+        "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_result_status": "fallback_allowed",
+      "expected_state_trace": [
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "primary_auth"
+    },
+    "dal.routing.oracle/DAL-T-ROUTING-CONTRACT-001/primary_budget_limit/G3/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK-DENIED-BUDGET--coding",
+      "expected_event_trace": [],
+      "expected_failure_class": null,
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_handoff_state": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_result_status": "fallback_denied",
+      "expected_state_trace": [
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "primary_budget_limit"
+    },
+    "dal.routing.oracle/DAL-T-ROUTING-CONTRACT-001/primary_cancelled/G3/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK-DENIED-CANCEL--coding",
+      "expected_event_trace": [],
+      "expected_failure_class": null,
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_handoff_state": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_result_status": "fallback_denied",
+      "expected_state_trace": [
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "primary_cancelled"
+    },
+    "dal.routing.oracle/DAL-T-ROUTING-CONTRACT-001/primary_contract_failure/G3/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK-ALLOWED-CONTRACT--coding",
+      "expected_event_trace": [],
+      "expected_failure_class": null,
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_handoff_state": {
+        "base_sha": "0123456789abcdef0123456789abcdef01234567",
+        "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+        "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_result_status": "fallback_allowed",
+      "expected_state_trace": [
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "primary_contract_failure"
+    },
+    "dal.routing.oracle/DAL-T-ROUTING-CONTRACT-001/primary_policy_failure/G3/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK-DENIED-POLICY--coding",
+      "expected_event_trace": [],
+      "expected_failure_class": null,
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_handoff_state": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_result_status": "fallback_denied",
+      "expected_state_trace": [
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "primary_policy_failure"
+    },
+    "dal.routing.oracle/DAL-T-ROUTING-CONTRACT-001/primary_task_failure/G3/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK-DENIED-TASK--coding",
+      "expected_event_trace": [],
+      "expected_failure_class": null,
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_handoff_state": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_result_status": "fallback_denied",
+      "expected_state_trace": [
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "primary_task_failure"
+    },
+    "dal.routing.oracle/DAL-T-ROUTING-CONTRACT-001/primary_transient/G3/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK-ALLOWED-TRANSIENT--coding",
+      "expected_event_trace": [],
+      "expected_failure_class": null,
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_handoff_state": {
+        "base_sha": "0123456789abcdef0123456789abcdef01234567",
+        "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+        "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_result_status": "fallback_allowed",
+      "expected_state_trace": [
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "primary_transient"
+    },
+    "dal.routing.oracle/DAL-T-ROUTING-CONTRACT-001/primary_usage_limit/G3/1.0": {
+      "allowed_write_set": [],
+      "coverage_ref": "FALLBACK-ALLOWED-USAGE--coding",
+      "expected_event_trace": [],
+      "expected_failure_class": null,
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": null,
+        "reason_owner": null,
+        "state": "coding"
+      },
+      "expected_handoff_state": {
+        "base_sha": "0123456789abcdef0123456789abcdef01234567",
+        "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+        "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+      },
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_result_status": "fallback_allowed",
+      "expected_state_trace": [
+        "coding"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "primary_usage_limit"
+    },
+    "dal.routing.oracle/DAL-T-ROUTING-CONTRACT-001/unknown_slot_request/G3/1.0": {
+      "allowed_write_set": [
+        "aggregate",
+        "audit",
+        "business_event",
+        "decision_create",
+        "decision_projection",
+        "notification_outbox",
+        "transition_receipt"
+      ],
+      "coverage_ref": "BLK-CONTRACT-SLOT--coding",
+      "expected_event_trace": [
+        "feature.blocked"
+      ],
+      "expected_failure_class": "contract_failure",
+      "expected_final_snapshot": {
+        "entity_type": "feature",
+        "reason_code": "PROVIDER_CONTRACT_FAILURE",
+        "reason_owner": "feature",
+        "state": "needs_human"
+      },
+      "expected_handoff_state": null,
+      "expected_receipts": [
+        {
+          "code": "APPLIED",
+          "count": 1,
+          "schema_version": "dal.transition-receipt/1.0"
+        }
+      ],
+      "expected_result_status": "blocked",
+      "expected_state_trace": [
+        "coding",
+        "needs_human"
+      ],
+      "forbidden_side_effects": [
+        "filesystem_write",
+        "network_call",
+        "process_spawn",
+        "production_access",
+        "provider_call"
+      ],
+      "pre_state": {
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "unknown_slot_request"
+    }
+  },
+  "schema_version": "dal.routing-authority/1.0",
+  "semantic_counts": {
+    "block_event_variants": 4,
+    "blocked_variants": 4,
+    "contract_failure_variants": 1,
+    "fallback_allowed_variants": 4,
+    "fallback_denied_variants": 4,
+    "handoff_state_variants": 4,
+    "needs_human_variants": 4,
+    "no_fallback_route_variants": 1,
+    "policy_failure_variants": 3,
+    "routing_variants": 13,
+    "zero_write_variants": 9
+  },
+  "source_boundary": "static-independent-review-authority; never generated by build_routing_manifests.py"
+}

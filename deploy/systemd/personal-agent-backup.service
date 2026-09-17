@@ -16,8 +16,8 @@
 # the other services still holds: neither api nor mcp is in this group.
 [Unit]
 Description=Personal Agent offsite backup (restic -> OSS)
-After=personal-agent-db-backup.service personal-data-mcp-db-backup.service
-Requires=personal-agent-db-backup.service personal-data-mcp-db-backup.service
+After=personal-agent-db-backup.service personal-data-mcp-db-backup.service personal-agent-dal-db-backup.service
+Requires=personal-agent-db-backup.service personal-data-mcp-db-backup.service personal-agent-dal-db-backup.service
 
 [Service]
 Type=oneshot

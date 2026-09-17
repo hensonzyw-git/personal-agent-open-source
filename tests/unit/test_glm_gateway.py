@@ -1141,6 +1141,60 @@ def test_a_partial_response_fails_closed_even_if_it_contains_a_tool_call(envelop
         _propose(gateway, envelope)
 
 
+def test_a_duplicate_top_level_argument_key_fails_closed(envelope) -> None:
+    """F6 (2026-09-07 review): ambiguous model output must not be resolved.
+
+    `{"amount":"1.00","amount":"900.00"}` used to parse last-wins into
+    `{"amount":"900.00"}`: the parser silently chose a value for untrusted
+    model output. The gateway must refuse the ambiguity instead.
+    """
+    gateway, _ = _gateway(
+        _response(_call("finance.log_expense", '{"name": "午饭", "name": "晚饭"}'))
+    )
+    with pytest.raises(ModelGatewayError, match="duplicate"):
+        _propose(gateway, envelope)
+
+
+def test_a_duplicate_nested_argument_key_fails_closed(envelope) -> None:
+    """The duplicate-key rejection covers nested objects, not just the top level."""
+    gateway, _ = _gateway(
+        _response(
+            _call(
+                "finance.log_expense",
+                '{"name": "午饭", "meta": {"k": "1", "k": "2"}}',
+            )
+        )
+    )
+    with pytest.raises(ModelGatewayError, match="duplicate"):
+        _propose(gateway, envelope)
+
+
+def test_normal_string_arguments_still_parse(envelope) -> None:
+    """The strict loader must not reject well-formed argument JSON."""
+    gateway, _ = _gateway(
+        _response(_call("finance.log_expense", '{"name": "午饭", "input_amount": "45"}'))
+    )
+    proposal = _propose(gateway, envelope)
+    assert proposal == ProposedToolCall(
+        "finance.log_expense",
+        {"name": "午饭", "input_amount": "45"},
+    )
+
+
+def test_an_already_parsed_dict_passes_through_unchanged(envelope) -> None:
+    """Documents the F6 boundary honestly.
+
+    When ADK hands over an already-parsed dict, duplicate keys were collapsed
+    upstream and are undetectable here. The dict passthrough keeps its exact
+    identity (no re-serialisation round trip); the duplicate-key guarantee
+    covers the raw-string path this gateway parses itself.
+    """
+    args = {"name": "午饭", "input_amount": "45"}
+    gateway, _ = _gateway(_response(_call("finance.log_expense", args)))
+    proposal = _propose(gateway, envelope)
+    assert proposal.arguments is args
+
+
 def test_thought_content_is_skipped_beside_a_tool_call(envelope) -> None:
     """GLM 5.3-class models always reason: the thought part is private process,
     not untrusted prose, so it is skipped and the single call is accepted."""

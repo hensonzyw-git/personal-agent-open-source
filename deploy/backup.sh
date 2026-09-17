@@ -33,6 +33,9 @@ RISK_DB_SNAPSHOT="$STAGING/api/risk_monitor.latest.sqlite"
 # is deliberately not able to enter it.
 STAGED_LEDGER_CONFIG="$STAGING/mcp/ledger.synthetic_test.2026.json"
 UNIT_DIR=/etc/systemd/system
+# The DAL workflow database snapshot (R09-B backup-set decision, 2026-09-02).
+# Staged by personal-agent-dal-db-backup from the DAL service's own 0700 dir.
+DAL_DB_SNAPSHOT="$STAGING/dal/dal.latest.sqlite"
 # The API service publishes an immutable DB + deletion-manifest + ciphertext
 # media run here. This backup user holds this separate bundle lock shared from
 # verification through restic, so the producer/GC cannot switch or reclaim the
@@ -117,6 +120,7 @@ INPUT_LABELS=(
   "mcp unit"
   "mcp observe unit"
   "mcp observe timer"
+  "dal snapshot"
 )
 INPUTS=(
   "$BUNDLE_DIR"
@@ -127,6 +131,7 @@ INPUTS=(
   "$UNIT_DIR/personal-data-mcp.service"
   "$UNIT_DIR/personal-data-mcp-observe.service"
   "$UNIT_DIR/personal-data-mcp-observe.timer"
+  "$DAL_DB_SNAPSHOT"
 )
 
 # Fail closed on a missing snapshot: a backup that ships one DB and not the

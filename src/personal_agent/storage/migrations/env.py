@@ -48,24 +48,25 @@ def run_migrations_online() -> None:
         # owner of the migration's own.
         _pragma(connection, "foreign_keys=OFF")
         try:
-            context.configure(
-                connection=connection,
-                target_metadata=target_metadata,
-                render_as_batch=True,
-                compare_type=True,
-            )
-            with context.begin_transaction():
-                context.run_migrations()
-                violations = connection.exec_driver_sql(
-                    "PRAGMA foreign_key_check"
-                ).fetchall()
-                if violations:
-                    # Raised inside the transaction, so this rolls the whole
-                    # migration back rather than committing a broken schema.
-                    raise RuntimeError(
-                        f"migration left {len(violations)} foreign key "
-                        "violation(s); rolling back"
-                    )
+            with connection.begin():
+                context.configure(
+                    connection=connection,
+                    target_metadata=target_metadata,
+                    render_as_batch=True,
+                    compare_type=True,
+                )
+                with context.begin_transaction():
+                    context.run_migrations()
+                    violations = connection.exec_driver_sql(
+                        "PRAGMA foreign_key_check"
+                    ).fetchall()
+                    if violations:
+                        # Raised inside the transaction, so this rolls the whole
+                        # migration back rather than committing a broken schema.
+                        raise RuntimeError(
+                            f"migration left {len(violations)} foreign key "
+                            "violation(s); rolling back"
+                        )
         finally:
             _pragma(connection, "foreign_keys=ON")
 

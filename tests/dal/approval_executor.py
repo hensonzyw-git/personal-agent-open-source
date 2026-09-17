@@ -34,6 +34,8 @@ from personal_agent_dal.machine.engine import (
     apply_transition,
 )
 from personal_agent_dal.machine.guards import GuardFacts
+from personal_agent_dal.machine.binding import build_state_binding
+from personal_agent_dal.machine.registry import jcs_sha256
 from personal_agent_dal.storage import db
 from personal_agent_dal.storage.engine import create_database_engine, session_factory
 
@@ -56,13 +58,13 @@ def _seed(engine: Any, fixture_body: dict[str, Any]) -> datetime:
 
     sessions = session_factory(engine)
     with sessions() as session, session.begin():
-        session.add(
-            feature_row(
-                feature_id=target["entity_id"],
-                version=target["version"],
-                state=target["state"],
-            )
+        feature = feature_row(
+            feature_id=target["entity_id"],
+            version=target["version"],
+            state=target["state"],
         )
+        state_sha256 = jcs_sha256(build_state_binding(feature))
+        session.add(feature)
         # Decision
         dec = facts["decision"]
         d = decision_row(
@@ -70,6 +72,8 @@ def _seed(engine: Any, fixture_body: dict[str, Any]) -> datetime:
             decision_id=dec["decision_id"],
         )
         d.decision_version = dec["version"]
+        d.state_sha256 = state_sha256
+        d.expires_at = parse_rfc3339(dec["expires_at"])
         session.add(d)
 
         # Approval — seed in the state the fixture declares. The fixture's
@@ -84,8 +88,15 @@ def _seed(engine: Any, fixture_body: dict[str, Any]) -> datetime:
         ap = approval_row(
             feature_id=target["entity_id"],
             approval_id=ap_facts["approval_id"],
+            action=action["command"],
+            decision_id=dec["decision_id"],
+            decision_version=dec["version"],
+            expected_feature_version=target["version"],
+            expected_state=target["state"],
         )
+        ap.valid_from = server_now
         ap.expires_at = parse_rfc3339(ap_facts["expires_at"])
+        ap.state_sha256 = state_sha256
         if ap_facts["status"] in ("consumed", "revoked"):
             ap.consumed_by_command_id = (
                 f"revoked:{ap_facts['approval_id']}"
@@ -111,7 +122,7 @@ def _build_command(op: dict[str, Any], target: dict[str, Any]) -> TransitionComm
             "approval_id": action.get("approval_id"),
             "decision_id": action.get("decision_id"),
             "submitted_decision_version": facts.get("submitted_decision_version"),
-            "decision_expires_at": facts.get("decision", {}).get("expires_at"),
+            "observed_state_sha256": facts.get("observed_state_sha256"),
         },
         actor_type=op["actor_type"],
         evidence_source_types=(op["evidence_source_type"],),
@@ -165,18 +176,11 @@ def execute_approval_fixture(
     before = _state_snapshot(engine)
     for op in fixture_body["operation_sequence"]:
         command = _build_command(op, target)
-        # The fixture snapshots every operation's target at the pre-state
-        # version. In a multi-operation sequence the first APPLIED op bumps
-        # the feature version, so a later op's `expected_version` must track
-        # the current row: the oracle expects the racing op to reach the
-        # approval CAS and lose there (APPROVAL_INVALID), not to be refused
-        # earlier on a stale version (VERSION_CONFLICT).
-        if command.expected_version is not None:
-            current = _state_snapshot(engine)["feature"]
-            if current is not None and current["version"] != command.expected_version:
-                command = TransitionCommand(
-                    **{**command.__dict__, "expected_version": current["version"]}
-                )
+        # Each operation carries the fixture's frozen `expected_version`
+        # verbatim. The approval token gate consumes the approval (and reports
+        # APPROVAL_INVALID on a lost race) *before* the aggregate version CAS,
+        # so a later op reaching the approval CAS still loses there rather
+        # than being refused earlier on a stale version (VERSION_CONFLICT).
         outcome = apply_transition(engine, command, facts=GuardFacts({}), now=server_now)
         merged.receipts.append(
             ReceiptRecord(code=outcome.receipt_code, schema_version=outcome.receipt_schema)

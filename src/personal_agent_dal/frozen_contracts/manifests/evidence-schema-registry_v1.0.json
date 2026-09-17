@@ -1,0 +1,5913 @@
+{
+  "evidence_schemas": [
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "decision_action": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "decision_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.approval/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "decision_id",
+          "decision_action",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.approval/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.auth-probe/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.auth-probe/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "effect_scope_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "remote_idempotency_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "result": {
+            "enum": [
+              "confirmed_completed",
+              "confirmed_not_executed",
+              "unknown"
+            ]
+          },
+          "schema_version": {
+            "const": "dal.evidence.authoritative-post-read/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "target_fingerprint": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "effect_scope_key",
+          "remote_idempotency_key",
+          "target_fingerprint",
+          "result",
+          "readback_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.authoritative-post-read/1.0",
+      "source_type_binding": [
+        "counterparty-adapter"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "configured_limit": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "decision_action": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "decision_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "observed_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "run_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.budget-approval/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "decision_id",
+          "decision_action",
+          "expires_at",
+          "run_id",
+          "observed_count",
+          "configured_limit"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.budget-approval/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "configured_limit": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "observed_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "run_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.budget/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "run_id",
+          "observed_count",
+          "configured_limit"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.budget/1.0",
+      "source_type_binding": [
+        "budget-controller"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.cancellation-impact/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.cancellation-impact/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.checkpoint/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.checkpoint/1.0",
+      "source_type_binding": [
+        "registered-device",
+        "workflow-service"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.completion/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.completion/1.0",
+      "source_type_binding": [
+        "github-control"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "effect_scope_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "receipt_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "remote_idempotency_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "remote_receipt_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.counterparty-receipt/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "target_fingerprint": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "effect_scope_key",
+          "remote_idempotency_key",
+          "target_fingerprint",
+          "remote_receipt_id",
+          "receipt_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.counterparty-receipt/1.0",
+      "source_type_binding": [
+        "counterparty-adapter"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "decision_action": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "decision_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.decision/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "decision_id",
+          "decision_action",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.decision/1.0",
+      "source_type_binding": [
+        "external-effect-controller",
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "decision_action": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "decision_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.deploy-approval/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "decision_id",
+          "decision_action",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.deploy-approval/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.deployment-intent/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.deployment-intent/1.0",
+      "source_type_binding": [
+        "delivery-control"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "authoritative_readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "deployment_target_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_action": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_attempt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "effect_scope_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_state": {
+            "enum": [
+              "intent_recorded",
+              "claimed",
+              "dispatch_started",
+              "unknown",
+              "reconciling",
+              "confirmed_completed",
+              "confirmed_not_executed"
+            ]
+          },
+          "environment_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "external_effect_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "external_effect_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "impact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "remote_idempotency_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "remote_receipt_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.deployment-receipt/1.0"
+          },
+          "semantic_binding_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "target_fingerprint": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "version_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "effect_scope_key",
+          "remote_idempotency_key",
+          "effect_state",
+          "semantic_binding_sha256",
+          "external_effect_id",
+          "external_effect_version",
+          "effect_attempt",
+          "effect_action",
+          "target_fingerprint",
+          "environment_id",
+          "deployment_target_id",
+          "version_digest",
+          "remote_receipt_id",
+          "authoritative_readback_sha256",
+          "impact_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.deployment-receipt/1.0",
+      "source_type_binding": [
+        "delivery-control"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.drift-probe/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.drift-probe/1.0",
+      "source_type_binding": [
+        "external-effect-controller",
+        "provider-adapter",
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "effect_scope_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_state": {
+            "enum": [
+              "intent_recorded",
+              "claimed",
+              "dispatch_started",
+              "unknown",
+              "reconciling",
+              "confirmed_completed",
+              "confirmed_not_executed"
+            ]
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "remote_idempotency_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.effect-claim/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "effect_scope_key",
+          "remote_idempotency_key",
+          "effect_state"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.effect-claim/1.0",
+      "source_type_binding": [
+        "external-effect-controller"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "base_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "effect_scope_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_state": {
+            "enum": [
+              "intent_recorded",
+              "claimed",
+              "dispatch_started",
+              "unknown",
+              "reconciling",
+              "confirmed_completed",
+              "confirmed_not_executed"
+            ]
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "remote_idempotency_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.effect-dispatch/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "effect_scope_key",
+          "remote_idempotency_key",
+          "effect_state",
+          "repository_id",
+          "base_sha",
+          "artifact_digest"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.effect-dispatch/1.0",
+      "source_type_binding": [
+        "effect-executor"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "effect_scope_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_state": {
+            "enum": [
+              "intent_recorded",
+              "claimed",
+              "dispatch_started",
+              "unknown",
+              "reconciling",
+              "confirmed_completed",
+              "confirmed_not_executed"
+            ]
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "remote_idempotency_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.effect-inventory/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "effect_scope_key",
+          "remote_idempotency_key",
+          "effect_state"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.effect-inventory/1.0",
+      "source_type_binding": [
+        "external-effect-controller",
+        "registered-device",
+        "workflow-service"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "effect_scope_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_state": {
+            "enum": [
+              "intent_recorded",
+              "claimed",
+              "dispatch_started",
+              "unknown",
+              "reconciling",
+              "confirmed_completed",
+              "confirmed_not_executed"
+            ]
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "remote_idempotency_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.effect-rearm/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "effect_scope_key",
+          "remote_idempotency_key",
+          "effect_state"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.effect-rearm/1.0",
+      "source_type_binding": [
+        "external-effect-controller",
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "effect_scope_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_state": {
+            "enum": [
+              "intent_recorded",
+              "claimed",
+              "dispatch_started",
+              "unknown",
+              "reconciling",
+              "confirmed_completed",
+              "confirmed_not_executed"
+            ]
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "remote_idempotency_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.effect-unknown/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "effect_scope_key",
+          "remote_idempotency_key",
+          "effect_state"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.effect-unknown/1.0",
+      "source_type_binding": [
+        "counterparty-adapter",
+        "external-effect-controller"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.executor-termination/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.executor-termination/1.0",
+      "source_type_binding": [
+        "external-effect-controller"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "approved_profile_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "budget_remaining": {
+            "type": "boolean"
+          },
+          "eligibility_binding_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "failure_class": {
+            "enum": [
+              "usage_limit",
+              "transient",
+              "auth",
+              "task_failure",
+              "contract_failure",
+              "policy_failure",
+              "budget_limit"
+            ]
+          },
+          "fallback_preflight_expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fallback_preflight_receipt_id": {
+            "minLength": 1,
+            "not": {
+              "pattern": "[^A-Za-z0-9._:/-]"
+            },
+            "pattern": "^[A-Za-z0-9]",
+            "type": "string"
+          },
+          "fallback_profile_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "fallback_used": {
+            "type": "boolean"
+          },
+          "handoff_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "primary_failure_receipt_id": {
+            "minLength": 1,
+            "not": {
+              "pattern": "[^A-Za-z0-9._:/-]"
+            },
+            "pattern": "^[A-Za-z0-9]",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "provider_attempt_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "dal.evidence.fallback-eligibility/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unknown_effect_count": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "approved_profile_sha256",
+          "primary_failure_receipt_id",
+          "failure_class",
+          "fallback_profile_sha256",
+          "fallback_preflight_receipt_id",
+          "fallback_preflight_expires_at",
+          "handoff_sha256",
+          "unknown_effect_count",
+          "budget_remaining",
+          "fallback_used",
+          "provider_attempt_count",
+          "eligibility_binding_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.fallback-eligibility/1.0",
+      "source_type_binding": [
+        "provider-adapter"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.feature/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.feature/1.0",
+      "source_type_binding": [
+        "workflow-service"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "base_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.git-readback/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "repository_id",
+          "base_sha",
+          "artifact_digest"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.git-readback/1.0",
+      "source_type_binding": [
+        "github-control",
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "base_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.github-merge-intent/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "repository_id",
+          "base_sha",
+          "artifact_digest"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.github-merge-intent/1.0",
+      "source_type_binding": [
+        "github-control"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "action_receipt_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "actor_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "head_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "merge_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "merged_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "pull_request_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.github-observed-merge/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "repository_id",
+          "pull_request_id",
+          "head_sha",
+          "merge_sha",
+          "actor_id",
+          "merged_at",
+          "action_receipt_id",
+          "readback_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.github-observed-merge/1.0",
+      "source_type_binding": [
+        "github-control",
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "authoritative_readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "base_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "effect_action": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_attempt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "effect_scope_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_state": {
+            "enum": [
+              "intent_recorded",
+              "claimed",
+              "dispatch_started",
+              "unknown",
+              "reconciling",
+              "confirmed_completed",
+              "confirmed_not_executed"
+            ]
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "external_effect_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "external_effect_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "head_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "impact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "merge_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "pull_request_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "remote_idempotency_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "remote_receipt_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.github-receipt/1.0"
+          },
+          "semantic_binding_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "target_fingerprint": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "effect_scope_key",
+          "remote_idempotency_key",
+          "effect_state",
+          "semantic_binding_sha256",
+          "external_effect_id",
+          "external_effect_version",
+          "effect_attempt",
+          "effect_action",
+          "target_fingerprint",
+          "repository_id",
+          "base_sha",
+          "artifact_digest",
+          "pull_request_id",
+          "head_sha",
+          "merge_sha",
+          "remote_receipt_id",
+          "authoritative_readback_sha256",
+          "impact_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.github-receipt/1.0",
+      "source_type_binding": [
+        "github-control"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.lease/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.lease/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "base_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "decision_action": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "decision_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.merge-approval/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "decision_id",
+          "decision_action",
+          "expires_at",
+          "repository_id",
+          "base_sha",
+          "artifact_digest"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.merge-approval/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "action_receipt_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "actor_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "deployed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.observed-deployment/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "target_fingerprint": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "version_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "target_fingerprint",
+          "version_digest",
+          "actor_id",
+          "deployed_at",
+          "action_receipt_id",
+          "readback_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.observed-deployment/1.0",
+      "source_type_binding": [
+        "delivery-control",
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "base_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.patch/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "repository_id",
+          "base_sha",
+          "artifact_digest"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.patch/1.0",
+      "source_type_binding": [
+        "worker"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "base_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "decision_action": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "decision_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.plan-approval/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "decision_id",
+          "decision_action",
+          "expires_at",
+          "repository_id",
+          "base_sha",
+          "artifact_digest"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.plan-approval/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "base_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.plan-start/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "repository_id",
+          "base_sha",
+          "artifact_digest"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.plan-start/1.0",
+      "source_type_binding": [
+        "workflow-service"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "base_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.plan/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "repository_id",
+          "base_sha",
+          "artifact_digest"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.plan/1.0",
+      "source_type_binding": [
+        "planner"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.policy-failure/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.policy-failure/1.0",
+      "source_type_binding": [
+        "policy-engine"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "base_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.policy-replan/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "repository_id",
+          "base_sha",
+          "artifact_digest"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.policy-replan/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "authoritative_readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "effect_scope_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_state": {
+            "enum": [
+              "intent_recorded",
+              "claimed",
+              "dispatch_started",
+              "unknown",
+              "reconciling",
+              "confirmed_completed",
+              "confirmed_not_executed"
+            ]
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "remote_idempotency_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.post-effect-failure/1.0"
+          },
+          "source_effect_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "effect_scope_key",
+          "remote_idempotency_key",
+          "effect_state",
+          "source_effect_ids",
+          "authoritative_readback_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.post-effect-failure/1.0",
+      "source_type_binding": [
+        "workflow-service"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "authoritative_readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "effect_scope_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_state": {
+            "enum": [
+              "intent_recorded",
+              "claimed",
+              "dispatch_started",
+              "unknown",
+              "reconciling",
+              "confirmed_completed",
+              "confirmed_not_executed"
+            ]
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "remote_idempotency_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.post-effect-readback/1.0"
+          },
+          "source_effect_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "effect_scope_key",
+          "remote_idempotency_key",
+          "effect_state",
+          "source_effect_ids",
+          "authoritative_readback_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.post-effect-readback/1.0",
+      "source_type_binding": [
+        "external-effect-controller",
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "base_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.pr-snapshot/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "repository_id",
+          "base_sha",
+          "artifact_digest"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.pr-snapshot/1.0",
+      "source_type_binding": [
+        "github-control"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.prerequisite/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.prerequisite/1.0",
+      "source_type_binding": [
+        "preflight-control",
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.production-verification/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.production-verification/1.0",
+      "source_type_binding": [
+        "delivery-control"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "attempt_receipt_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "initial_attempt_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "last_failure_class": {
+            "enum": [
+              "usage_limit",
+              "transient",
+              "auth",
+              "task_failure",
+              "contract_failure",
+              "policy_failure",
+              "budget_limit"
+            ]
+          },
+          "max_transient_retries": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "provider_attempt_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "dal.evidence.provider-attempts/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "transient_retry_count": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "initial_attempt_count",
+          "transient_retry_count",
+          "provider_attempt_count",
+          "max_transient_retries",
+          "attempt_receipt_ids",
+          "last_failure_class"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.provider-attempts/1.0",
+      "source_type_binding": [
+        "provider-adapter",
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "base_sha": {
+            "pattern": "^[0-9a-f]{40}$",
+            "type": "string"
+          },
+          "configured_limit": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "observed_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "repository_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "run_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.provider-contract-replan/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "run_id",
+          "observed_count",
+          "configured_limit",
+          "repository_id",
+          "base_sha",
+          "artifact_digest"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.provider-contract-replan/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "configured_limit": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "observed_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "run_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.provider-failure/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "run_id",
+          "observed_count",
+          "configured_limit"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.provider-failure/1.0",
+      "source_type_binding": [
+        "provider-adapter",
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "configured_limit": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "observed_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "run_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.provider-start/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "run_id",
+          "observed_count",
+          "configured_limit"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.provider-start/1.0",
+      "source_type_binding": [
+        "workflow-service"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "effect_scope_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_state": {
+            "enum": [
+              "intent_recorded",
+              "claimed",
+              "dispatch_started",
+              "unknown",
+              "reconciling",
+              "confirmed_completed",
+              "confirmed_not_executed"
+            ]
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "remote_idempotency_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.reconciliation-claim/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "effect_scope_key",
+          "remote_idempotency_key",
+          "effect_state"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.reconciliation-claim/1.0",
+      "source_type_binding": [
+        "external-effect-controller"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "else": {
+              "properties": {
+                "authoritative_receipt_id": {
+                  "type": "null"
+                }
+              }
+            },
+            "if": {
+              "properties": {
+                "effect_result": {
+                  "const": "confirmed_completed"
+                }
+              },
+              "required": [
+                "effect_result"
+              ]
+            },
+            "then": {
+              "properties": {
+                "authoritative_receipt_id": {
+                  "minLength": 1,
+                  "not": {
+                    "pattern": "[^A-Za-z0-9._:/-]"
+                  },
+                  "pattern": "^[A-Za-z0-9]",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "authoritative_readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "authoritative_receipt_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decision_action": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_action": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_attempt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "effect_result": {
+            "enum": [
+              "confirmed_completed",
+              "confirmed_not_executed"
+            ]
+          },
+          "effect_scope_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_state": {
+            "enum": [
+              "intent_recorded",
+              "claimed",
+              "dispatch_started",
+              "unknown",
+              "reconciling",
+              "confirmed_completed",
+              "confirmed_not_executed"
+            ]
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "external_effect_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "external_effect_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "impact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "remote_idempotency_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.reconciliation/1.0"
+          },
+          "semantic_binding_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "target_fingerprint": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "effect_scope_key",
+          "remote_idempotency_key",
+          "effect_state",
+          "semantic_binding_sha256",
+          "external_effect_id",
+          "external_effect_version",
+          "effect_attempt",
+          "effect_action",
+          "target_fingerprint",
+          "decision_action",
+          "effect_result",
+          "authoritative_receipt_id",
+          "authoritative_readback_sha256",
+          "impact_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.reconciliation/1.0",
+      "source_type_binding": [
+        "external-effect-controller",
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "authoritative_readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "decision_action": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "decision_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.recovery-approval/1.0"
+          },
+          "source_effect_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "decision_id",
+          "decision_action",
+          "expires_at",
+          "source_effect_ids",
+          "authoritative_readback_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.recovery-approval/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "authoritative_readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.recovery-cancellation/1.0"
+          },
+          "source_effect_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "source_effect_ids",
+          "authoritative_readback_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.recovery-cancellation/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "authoritative_readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.recovery-capability/1.0"
+          },
+          "source_effect_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "source_effect_ids",
+          "authoritative_readback_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.recovery-capability/1.0",
+      "source_type_binding": [
+        "recovery-executor"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "authoritative_readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "effect_scope_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_state": {
+            "enum": [
+              "intent_recorded",
+              "claimed",
+              "dispatch_started",
+              "unknown",
+              "reconciling",
+              "confirmed_completed",
+              "confirmed_not_executed"
+            ]
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "remote_idempotency_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.recovery-effect-inventory/1.0"
+          },
+          "source_effect_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "effect_scope_key",
+          "remote_idempotency_key",
+          "effect_state",
+          "source_effect_ids",
+          "authoritative_readback_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.recovery-effect-inventory/1.0",
+      "source_type_binding": [
+        "external-effect-controller",
+        "recovery-executor"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "authoritative_readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.recovery-execution/1.0"
+          },
+          "source_effect_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "source_effect_ids",
+          "authoritative_readback_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.recovery-execution/1.0",
+      "source_type_binding": [
+        "recovery-executor"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "authoritative_readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.recovery-investigation/1.0"
+          },
+          "source_effect_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "source_effect_ids",
+          "authoritative_readback_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.recovery-investigation/1.0",
+      "source_type_binding": [
+        "external-effect-controller"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "authoritative_readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.recovery-policy/1.0"
+          },
+          "source_effect_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "source_effect_ids",
+          "authoritative_readback_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.recovery-policy/1.0",
+      "source_type_binding": [
+        "policy-engine"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "authoritative_readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "impact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "proposal_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.recovery-proposal/1.0"
+          },
+          "source_effect_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "source_effect_versions": {
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "source_effect_ids",
+          "source_effect_versions",
+          "authoritative_readback_sha256",
+          "impact_sha256",
+          "proposal_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.recovery-proposal/1.0",
+      "source_type_binding": [
+        "external-effect-controller",
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "authoritative_readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.recovery-reinvestigation/1.0"
+          },
+          "source_effect_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "source_effect_ids",
+          "authoritative_readback_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.recovery-reinvestigation/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "authoritative_readback_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.recovery-verification/1.0"
+          },
+          "source_effect_ids": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "source_effect_ids",
+          "authoritative_readback_sha256"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.recovery-verification/1.0",
+      "source_type_binding": [
+        "external-effect-controller",
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.requirement-answer/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.requirement-answer/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.requirement-gap/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.requirement-gap/1.0",
+      "source_type_binding": [
+        "workflow-service"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "configured_limit": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "decision_action": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "decision_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "observed_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "run_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.review-loop-decision/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "decision_id",
+          "decision_action",
+          "expires_at",
+          "run_id",
+          "observed_count",
+          "configured_limit"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.review-loop-decision/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "configured_limit": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "observed_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "run_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.review-loop/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "run_id",
+          "observed_count",
+          "configured_limit"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.review-loop/1.0",
+      "source_type_binding": [
+        "workflow-service"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.review/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.review/1.0",
+      "source_type_binding": [
+        "reviewer"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.revision/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.revision/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "approved_profile_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "failure_class": {
+            "enum": [
+              "usage_limit",
+              "transient",
+              "auth",
+              "task_failure",
+              "contract_failure",
+              "policy_failure",
+              "budget_limit"
+            ]
+          },
+          "fallback_used": {
+            "type": "boolean"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "primary_failure_receipt_id": {
+            "minLength": 1,
+            "not": {
+              "pattern": "[^A-Za-z0-9._:/-]"
+            },
+            "pattern": "^[A-Za-z0-9]",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "route_binding_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "route_preflight_expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "route_preflight_receipt_id": {
+            "minLength": 1,
+            "not": {
+              "pattern": "[^A-Za-z0-9._:/-]"
+            },
+            "pattern": "^[A-Za-z0-9]",
+            "type": "string"
+          },
+          "route_profile_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.route-resume/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "approved_profile_sha256",
+          "primary_failure_receipt_id",
+          "failure_class",
+          "route_profile_sha256",
+          "route_preflight_receipt_id",
+          "route_preflight_expires_at",
+          "route_binding_sha256",
+          "fallback_used"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.route-resume/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.state-drift/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.state-drift/1.0",
+      "source_type_binding": [
+        "registered-device",
+        "workflow-service"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "decision_action": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "decision_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.test-decision/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "decision_id",
+          "decision_action",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.test-decision/1.0",
+      "source_type_binding": [
+        "registered-device"
+      ]
+    },
+    {
+      "json_schema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "artifact_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "effect_scope_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "effect_state": {
+            "enum": [
+              "intent_recorded",
+              "claimed",
+              "dispatch_started",
+              "unknown",
+              "reconciling",
+              "confirmed_completed",
+              "confirmed_not_executed"
+            ]
+          },
+          "evidence_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "fact_version": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "protected_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "remote_idempotency_key": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "dal.evidence.test-receipt/1.0"
+          },
+          "source_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_type": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "subject_aggregate_version": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "schema_version",
+          "source_type",
+          "subject_aggregate_type",
+          "subject_aggregate_id",
+          "subject_aggregate_version",
+          "observed_at",
+          "payload_sha256",
+          "protected_ref",
+          "artifact_sha256",
+          "fact_version",
+          "effect_scope_key",
+          "remote_idempotency_key",
+          "effect_state"
+        ],
+        "type": "object"
+      },
+      "schema_version": "dal.evidence.test-receipt/1.0",
+      "source_type_binding": [
+        "verifier"
+      ]
+    }
+  ],
+  "registry_sha256": "9f47b1c8a064729f6b1a099b6a9950bd14144dbdbbf42c7ee9e75d2171c497a6",
+  "schema_version": "dal.evidence-schema-registry/1.0"
+}

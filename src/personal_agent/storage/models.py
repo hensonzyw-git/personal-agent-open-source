@@ -638,7 +638,7 @@ class Operation(Base):
     #: be a terminal, proven-zero-write failure; application code enforces that
     #: semantic rule, while the unique constraint makes consumption one-shot.
     retry_of_operation_id: Mapped[str | None] = mapped_column(
-        ForeignKey("operations.operation_id", ondelete="RESTRICT"),
+        ForeignKey("operations.operation_id", ondelete="RESTRICT", name="retry_source_operation"),
         nullable=True,
     )
 
@@ -721,7 +721,7 @@ class Operation(Base):
     #: deliberate second one -- rather than one silent pass. See
     #: `parent_operation_derives_once` for why the promise is a constraint.
     parent_operation_id: Mapped[str | None] = mapped_column(
-        ForeignKey("operations.operation_id", ondelete="RESTRICT"),
+        ForeignKey("operations.operation_id", ondelete="RESTRICT", name="parent_operation"),
         nullable=True,
     )
     #: What the phone reported it did with the action. The verbatim value, not a
@@ -809,8 +809,8 @@ class Operation(Base):
             "parent_operation_id", name="parent_operation_derives_once"
         ),
         CheckConstraint(
-            _in_set("device_result", DEVICE_REPORT_RESULTS)
-            + " OR device_result IS NULL",
+            "device_result IS NULL OR "
+            + _in_set("device_result", DEVICE_REPORT_RESULTS),
             name="device_result",
         ),
         # A plan membership is one fact in two columns: an index with no plan
@@ -964,6 +964,44 @@ class DeletionManifest(Base):
     )
 
 
+class DalResumeProposal(Base):
+    __tablename__ = "dal_resume_proposals"
+    proposal_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    device_id: Mapped[str] = mapped_column(Text, ForeignKey("devices.device_id", ondelete="RESTRICT"), nullable=False)
+    request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class DalResumeDecision(Base):
+    __tablename__ = "dal_resume_decisions"
+    decision_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    proposal_id: Mapped[str] = mapped_column(Text, ForeignKey("dal_resume_proposals.proposal_id", ondelete="RESTRICT"), nullable=False)
+    device_id: Mapped[str] = mapped_column(Text, ForeignKey("devices.device_id", ondelete="RESTRICT"), nullable=False)
+    subject_id: Mapped[str] = mapped_column(Text, nullable=False)
+    key_thumbprint: Mapped[str] = mapped_column(Text, nullable=False)
+    decision: Mapped[str] = mapped_column(Text, nullable=False)
+    claims: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class DalResumeDelivery(Base):
+    __tablename__ = "dal_resume_deliveries"
+    decision_id: Mapped[str] = mapped_column(Text, ForeignKey("dal_resume_decisions.decision_id", ondelete="RESTRICT"), primary_key=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    approval_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    __table_args__ = (
+        CheckConstraint("status IN ('queued','accepted','rejected','expired','delivery_unknown')", name='delivery_status'),
+        CheckConstraint('attempts >= 0', name='delivery_attempts'),
+        CheckConstraint("status <> 'expired' OR attempts = 0", name='expired_never_attempted'),
+        CheckConstraint("status <> 'delivery_unknown' OR attempts > 0", name='unknown_attempted'),
+        CheckConstraint("(status = 'accepted' AND approval_id IS NOT NULL AND attempts > 0) OR (status <> 'accepted' AND approval_id IS NULL)", name='delivery_evidence'),
+    )
+
 class MediaObject(Base):
     """One persisted image from a chat message (multimodal design 5.1).
 
@@ -1003,7 +1041,7 @@ class MediaObject(Base):
     state: Mapped[str] = mapped_column(Text, nullable=False)
     #: Compare-and-swap guard, same contract as `operations.state_version`: a
     #: writer that lost its claim must not transition newer state.
-    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
 
     #: Which writer currently holds the upload claim, and until when. The
     #: deadline bounds *this attempt*; the real mutual exclusion is the §4.1
@@ -1156,7 +1194,7 @@ class MediaAttempt(Base):
     #: dependent and leave SQLite unable to build either.
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
     state: Mapped[str] = mapped_column(Text, nullable=False)
-    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
 
     owner_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     claim_deadline: Mapped[datetime | None] = mapped_column(

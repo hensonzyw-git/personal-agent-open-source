@@ -155,6 +155,17 @@ def check_finance_schema_version(
     )
 
 
+def check_dal_schema_version(database: Path, expected: str = "head") -> dict[str, Any]:
+    from personal_agent_dal.storage import db as dal_db
+
+    return _check_schema_version(
+        database,
+        migrations_path=dal_db.MIGRATIONS_PATH,
+        name="dal_schema_version",
+        expected=expected,
+    )
+
+
 def check_agent_reference_integrity(database: Path) -> dict[str, Any]:
     """Verify the Agent-side request/operation and foreign-key lineage.
 
@@ -253,6 +264,97 @@ def check_finance_reference_integrity(database: Path) -> dict[str, Any]:
                 f"foreign_key_violations={foreign_key_violations} "
                 f"orphan_receipts={orphan_receipts} "
                 f"invalid_succeeded_receipts={invalid_successes}"
+            ),
+        }
+    finally:
+        engine.dispose()
+
+
+def check_dal_reference_integrity(database: Path) -> dict[str, Any]:
+    """Verify the restored DAL machine tables' reference integrity (R09-B).
+
+    The receipt graph is the DAL's audit spine: every state change is one
+    ``transition_receipts`` row, and ``aggregate_id`` plus
+    ``external_effects.owner_aggregate_id`` are polymorphic references the
+    schema cannot enforce with a foreign key. A restore that loses an effect
+    or feature row while keeping its receipts therefore passes
+    ``integrity_check`` and the FK graph while being unable to resume or
+    reconcile anything. The gate reads aggregate receipts against the
+    aggregates themselves, effects against their owners, and the idempotency
+    uniqueness the machine's replay fence depends on.
+    """
+    engine = create_read_only_database_engine(database)
+    try:
+        with engine.connect() as conn:
+            foreign_key_violations = len(
+                conn.execute(text("PRAGMA foreign_key_check")).all()
+            )
+            # Feature/recovery-case receipts whose aggregate row is gone.
+            orphan_aggregate_receipts = conn.execute(
+                text(
+                    "SELECT count(*) FROM ("
+                    " SELECT r.receipt_id FROM transition_receipts r"
+                    " LEFT JOIN features f"
+                    "   ON r.aggregate_type = 'feature'"
+                    "  AND r.aggregate_id = f.feature_id"
+                    " LEFT JOIN recovery_cases c"
+                    "   ON r.aggregate_type = 'recovery_case'"
+                    "  AND r.aggregate_id = c.recovery_case_id"
+                    " WHERE r.aggregate_type IN ('feature', 'recovery_case')"
+                    "   AND f.feature_id IS NULL AND c.recovery_case_id IS NULL"
+                    ")"
+                )
+            ).scalar_one()
+            # Effect receipts whose effect row is gone.
+            orphan_effect_receipts = conn.execute(
+                text(
+                    "SELECT count(*) FROM transition_receipts r "
+                    "LEFT JOIN external_effects e "
+                    "ON r.aggregate_type = 'external_effect' "
+                    "AND r.aggregate_id = e.effect_id "
+                    "WHERE r.aggregate_type = 'external_effect' "
+                    "AND e.effect_id IS NULL"
+                )
+            ).scalar_one()
+            # Effects whose owner feature/recovery-case row is gone.
+            orphan_effect_owners = conn.execute(
+                text(
+                    "SELECT count(*) FROM ("
+                    " SELECT e.effect_id FROM external_effects e"
+                    " LEFT JOIN features f"
+                    "   ON e.owner_aggregate_type = 'feature'"
+                    "  AND e.owner_aggregate_id = f.feature_id"
+                    " LEFT JOIN recovery_cases c"
+                    "   ON e.owner_aggregate_type = 'recovery_case'"
+                    "  AND e.owner_aggregate_id = c.recovery_case_id"
+                    " WHERE f.feature_id IS NULL AND c.recovery_case_id IS NULL"
+                    ")"
+                )
+            ).scalar_one()
+            # The machine's replay fence relies on unique idempotency keys.
+            duplicate_idempotency_keys = conn.execute(
+                text(
+                    "SELECT count(*) FROM (SELECT idempotency_key "
+                    "FROM transition_receipts "
+                    "GROUP BY idempotency_key HAVING count(*) > 1)"
+                )
+            ).scalar_one()
+        ok = (
+            foreign_key_violations == 0
+            and orphan_aggregate_receipts == 0
+            and orphan_effect_receipts == 0
+            and orphan_effect_owners == 0
+            and duplicate_idempotency_keys == 0
+        )
+        return {
+            "name": "dal_reference_integrity",
+            "ok": ok,
+            "detail": (
+                f"foreign_key_violations={foreign_key_violations} "
+                f"orphan_aggregate_receipts={orphan_aggregate_receipts} "
+                f"orphan_effect_receipts={orphan_effect_receipts} "
+                f"orphan_effect_owners={orphan_effect_owners} "
+                f"duplicate_idempotency_keys={duplicate_idempotency_keys}"
             ),
         }
     finally:
@@ -419,6 +521,7 @@ def run_all(
     keyring,
     *,
     finance_database: Path | None = None,
+    dal_database: Path | None = None,
     manifest_entries: list[dict[str, Any]] | None = None,
     aead_sample_entry_id: str | None = None,
     media_bundle: Path | None = None,
@@ -444,6 +547,14 @@ def run_all(
                 ),
                 check_finance_schema_version(finance_database),
                 check_finance_reference_integrity(finance_database),
+            ]
+        )
+    if dal_database is not None:
+        results.extend(
+            [
+                check_integrity(dal_database, name="dal_integrity_check"),
+                check_dal_schema_version(dal_database),
+                check_dal_reference_integrity(dal_database),
             ]
         )
     if aead_sample_entry_id is not None:

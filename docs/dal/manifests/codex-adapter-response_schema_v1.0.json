@@ -1,0 +1,504 @@
+{
+  "$comment": "task_id/model/harness/harness_version/binary_sha256/endpoint_policy_sha256/input_manifest_sha256/context_binding_sha256/requested_output_schema must byte-match the protected request (adapter/controller filled, never provider-copied). 'transient must have consumed 2 retries' and 'ended_at >= started_at' are controller checks. base_sha is not a response field. task_failure from the provider is reclassified to contract_failure and is therefore absent from failure_class.",
+  "$id": "dal.codex-adapter-response/1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "properties": {
+          "quarantined": {
+            "const": false
+          }
+        }
+      },
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "redaction_scan": {
+                "const": "failed"
+              }
+            },
+            "required": [
+              "redaction_scan"
+            ]
+          },
+          {
+            "properties": {
+              "endpoint_policy": {
+                "const": "failed"
+              }
+            },
+            "required": [
+              "endpoint_policy"
+            ]
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "failure_class": {
+            "const": "policy_failure"
+          },
+          "final_payload_ref": {
+            "type": "null"
+          },
+          "final_payload_sha256": {
+            "type": "null"
+          },
+          "quarantined": {
+            "const": true
+          },
+          "reason_code": {
+            "const": "POLICY_FAILURE"
+          },
+          "result_status": {
+            "const": "failed"
+          },
+          "validated_output_schema": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "result_status": {
+            "const": "succeeded"
+          }
+        },
+        "required": [
+          "result_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "endpoint_policy": {
+            "const": "passed"
+          },
+          "exit_code": {
+            "const": 0
+          },
+          "failure_class": {
+            "type": "null"
+          },
+          "final_payload_ref": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "final_payload_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "quarantined": {
+            "const": false
+          },
+          "reason_code": {
+            "type": "null"
+          },
+          "redaction_scan": {
+            "const": "passed"
+          },
+          "validated_output_schema": {
+            "enum": [
+              "dal.plan-artifact/1.0",
+              "dal.review-findings/1.0",
+              "dal.post-fix-verdict/1.0"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "result_status": {
+            "const": "blocked"
+          }
+        },
+        "required": [
+          "result_status"
+        ]
+      },
+      "then": {
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "properties": {
+                  "failure_class": {
+                    "const": "usage_limit"
+                  },
+                  "reason_code": {
+                    "const": "USAGE_LIMIT"
+                  }
+                },
+                "required": [
+                  "failure_class",
+                  "reason_code"
+                ]
+              },
+              {
+                "properties": {
+                  "failure_class": {
+                    "const": "auth"
+                  },
+                  "reason_code": {
+                    "const": "AUTH_REQUIRED"
+                  }
+                },
+                "required": [
+                  "failure_class",
+                  "reason_code"
+                ]
+              },
+              {
+                "properties": {
+                  "failure_class": {
+                    "const": "budget_limit"
+                  },
+                  "reason_code": {
+                    "const": "BUDGET_LIMIT"
+                  }
+                },
+                "required": [
+                  "failure_class",
+                  "reason_code"
+                ]
+              }
+            ]
+          }
+        ],
+        "properties": {
+          "final_payload_ref": {
+            "type": "null"
+          },
+          "final_payload_sha256": {
+            "type": "null"
+          },
+          "quarantined": {
+            "const": false
+          },
+          "validated_output_schema": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "result_status": {
+            "const": "failed"
+          }
+        },
+        "required": [
+          "result_status"
+        ]
+      },
+      "then": {
+        "allOf": [
+          {
+            "oneOf": [
+              {
+                "properties": {
+                  "failure_class": {
+                    "const": "transient"
+                  },
+                  "reason_code": {
+                    "const": "TRANSIENT_RETRY_EXHAUSTED"
+                  }
+                },
+                "required": [
+                  "failure_class",
+                  "reason_code"
+                ]
+              },
+              {
+                "properties": {
+                  "failure_class": {
+                    "const": "contract_failure"
+                  },
+                  "reason_code": {
+                    "const": "PROVIDER_CONTRACT_FAILURE"
+                  }
+                },
+                "required": [
+                  "failure_class",
+                  "reason_code"
+                ]
+              },
+              {
+                "properties": {
+                  "failure_class": {
+                    "const": "policy_failure"
+                  },
+                  "reason_code": {
+                    "const": "POLICY_FAILURE"
+                  }
+                },
+                "required": [
+                  "failure_class",
+                  "reason_code"
+                ]
+              }
+            ]
+          }
+        ],
+        "properties": {
+          "final_payload_ref": {
+            "type": "null"
+          },
+          "final_payload_sha256": {
+            "type": "null"
+          },
+          "validated_output_schema": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "result_status": {
+            "const": "cancelled"
+          }
+        },
+        "required": [
+          "result_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "failure_class": {
+            "type": "null"
+          },
+          "final_payload_ref": {
+            "type": "null"
+          },
+          "final_payload_sha256": {
+            "type": "null"
+          },
+          "reason_code": {
+            "type": "null"
+          },
+          "validated_output_schema": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "properties": {
+    "binary_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "context_binding_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "ended_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "endpoint_policy": {
+      "enum": [
+        "passed",
+        "failed"
+      ]
+    },
+    "endpoint_policy_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "exit_code": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "failure_class": {
+      "enum": [
+        "usage_limit",
+        "transient",
+        "auth",
+        "contract_failure",
+        "policy_failure",
+        "budget_limit",
+        null
+      ],
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "final_payload_ref": {
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "final_payload_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "harness": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "harness_version": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "input_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "model": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "quarantined": {
+      "type": "boolean"
+    },
+    "raw_evidence_ref": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "raw_evidence_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "reason_code": {
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "redaction_scan": {
+      "enum": [
+        "passed",
+        "failed"
+      ]
+    },
+    "requested_output_schema": {
+      "enum": [
+        "dal.plan-artifact/1.0",
+        "dal.review-findings/1.0",
+        "dal.post-fix-verdict/1.0"
+      ]
+    },
+    "result_status": {
+      "enum": [
+        "succeeded",
+        "blocked",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "schema_version": {
+      "const": "dal.codex-adapter-response/1.0"
+    },
+    "started_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "task_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "usage": {
+      "additionalProperties": false,
+      "properties": {
+        "cached_input_tokens": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output_tokens": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "provider_reported": {
+          "type": "boolean"
+        },
+        "total_tokens": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "provider_reported",
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "total_tokens"
+      ],
+      "type": "object"
+    },
+    "validated_output_schema": {
+      "enum": [
+        "dal.plan-artifact/1.0",
+        "dal.review-findings/1.0",
+        "dal.post-fix-verdict/1.0",
+        null
+      ],
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "task_id",
+    "model",
+    "harness",
+    "harness_version",
+    "binary_sha256",
+    "endpoint_policy_sha256",
+    "result_status",
+    "requested_output_schema",
+    "validated_output_schema",
+    "input_manifest_sha256",
+    "context_binding_sha256",
+    "final_payload_ref",
+    "final_payload_sha256",
+    "exit_code",
+    "started_at",
+    "ended_at",
+    "usage",
+    "failure_class",
+    "reason_code",
+    "raw_evidence_ref",
+    "raw_evidence_sha256",
+    "redaction_scan",
+    "endpoint_policy",
+    "quarantined"
+  ],
+  "type": "object"
+}

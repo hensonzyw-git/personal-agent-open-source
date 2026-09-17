@@ -1,0 +1,130 @@
+{
+  "fixture_catalog_sha256": "0de4ef54eb13943b115b15bbb67fb08a21729ce39801fa9d8dd5202c506dfc46",
+  "manifest_sha256": "7a0415c580673470ac867e3881a573dbe9f95dd514c226a941c839dfc98832ea",
+  "manifest_version": "1.0",
+  "oracle_catalog_sha256": "74d30cf835af47ecfeffa66af3307edac4b0e892dbb87455a4befa30f3be4209",
+  "registry_sha256": "6811ee79ce77c610fbb59ed6706e5b13b388103015b889cb5a5a697010959793",
+  "schema_version": "dal.verification-manifest/1.0",
+  "test_variants": [
+    {
+      "fixture_ref": "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/all_pass/G3/1.0",
+      "oracle_id": "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/all_pass/G3/1.0",
+      "owner_tasks": [
+        "DAL-029"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "all_pass"
+    },
+    {
+      "fixture_ref": "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/diff_fail/G3/1.0",
+      "oracle_id": "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/diff_fail/G3/1.0",
+      "owner_tasks": [
+        "DAL-029"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "diff_fail"
+    },
+    {
+      "fixture_ref": "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/diff_empty/G3/1.0",
+      "oracle_id": "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/diff_empty/G3/1.0",
+      "owner_tasks": [
+        "DAL-029"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "diff_empty"
+    },
+    {
+      "fixture_ref": "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/diff_hash_drift/G3/1.0",
+      "oracle_id": "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/diff_hash_drift/G3/1.0",
+      "owner_tasks": [
+        "DAL-029"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "diff_hash_drift"
+    },
+    {
+      "fixture_ref": "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/diff_base_mismatch/G3/1.0",
+      "oracle_id": "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/diff_base_mismatch/G3/1.0",
+      "owner_tasks": [
+        "DAL-029"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "diff_base_mismatch"
+    },
+    {
+      "fixture_ref": "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/format_fail/G3/1.0",
+      "oracle_id": "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/format_fail/G3/1.0",
+      "owner_tasks": [
+        "DAL-029"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "format_fail"
+    },
+    {
+      "fixture_ref": "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/lint_fail/G3/1.0",
+      "oracle_id": "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/lint_fail/G3/1.0",
+      "owner_tasks": [
+        "DAL-029"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "lint_fail"
+    },
+    {
+      "fixture_ref": "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/build_fail/G3/1.0",
+      "oracle_id": "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/build_fail/G3/1.0",
+      "owner_tasks": [
+        "DAL-029"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "build_fail"
+    },
+    {
+      "fixture_ref": "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/test_fail/G3/1.0",
+      "oracle_id": "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/test_fail/G3/1.0",
+      "owner_tasks": [
+        "DAL-029"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "test_fail"
+    },
+    {
+      "fixture_ref": "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/command_not_in_registry/G3/1.0",
+      "oracle_id": "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/command_not_in_registry/G3/1.0",
+      "owner_tasks": [
+        "DAL-029"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "command_not_in_registry"
+    },
+    {
+      "fixture_ref": "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/missing_stage/G3/1.0",
+      "oracle_id": "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/missing_stage/G3/1.0",
+      "owner_tasks": [
+        "DAL-029"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "missing_stage"
+    },
+    {
+      "fixture_ref": "dal.verification.fixture/DAL-T-VERIFICATION-CONTRACT-001/fail_preserves_last_verified_sha/G3/1.0",
+      "oracle_id": "dal.verification.oracle/DAL-T-VERIFICATION-CONTRACT-001/fail_preserves_last_verified_sha/G3/1.0",
+      "owner_tasks": [
+        "DAL-029"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-VERIFICATION-CONTRACT-001",
+      "variant_id": "fail_preserves_last_verified_sha"
+    }
+  ]
+}

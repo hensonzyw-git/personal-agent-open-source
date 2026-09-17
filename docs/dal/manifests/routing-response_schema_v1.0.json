@@ -1,0 +1,89 @@
+{
+  "$comment": "The routing classifier result. result_status is the handoff decision (blocked / fallback_allowed / fallback_denied / no_fallback_route); failure_class is only ever policy_failure or contract_failure and only for the fail-closed blocks. handoff_state is the preserved four-field work state for fallback_allowed, null otherwise.",
+  "$id": "dal.routing-response/1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "failure_class": {
+      "enum": [
+        "contract_failure",
+        "policy_failure",
+        null
+      ],
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "final_state": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "handoff_state": {
+      "additionalProperties": false,
+      "properties": {
+        "base_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string"
+        },
+        "diff_sha": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "last_verified_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tests_receipt": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "base_sha",
+        "diff_sha",
+        "last_verified_sha",
+        "tests_receipt"
+      ],
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "reason_code": {
+      "enum": [
+        "POLICY_FAILURE",
+        "PROVIDER_CONTRACT_FAILURE",
+        null
+      ],
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "result_status": {
+      "enum": [
+        "blocked",
+        "fallback_allowed",
+        "fallback_denied",
+        "no_fallback_route"
+      ]
+    },
+    "schema_version": {
+      "const": "dal.routing-response/1.0"
+    }
+  },
+  "required": [
+    "schema_version",
+    "result_status",
+    "failure_class",
+    "reason_code",
+    "final_state",
+    "handoff_state"
+  ],
+  "schema_version": "dal.routing-response/1.0",
+  "type": "object"
+}

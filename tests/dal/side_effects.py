@@ -17,7 +17,18 @@ Test-only module.
 
 from __future__ import annotations
 
+import builtins
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
+import http.client
+import io
+import os
+import socket
+import sqlite3
+import subprocess
+from collections.abc import Iterator
+from unittest.mock import patch
+import urllib.request
 
 
 #: The closed set of external boundaries the DAL-007–013 slice can observe.
@@ -59,3 +70,43 @@ class SideEffectProbe:
 def fresh_probe() -> SideEffectProbe:
     """A probe with nothing observed yet."""
     return SideEffectProbe()
+
+
+class ForbiddenSideEffectError(RuntimeError):
+    """A supposedly pure DAL handler crossed an external boundary."""
+
+
+@contextmanager
+def guard_pure_policy(probe: SideEffectProbe) -> Iterator[None]:
+    """Fail before a pure policy can touch file, DB, process, or network I/O.
+
+    The guard wraps only the production handler invocation, after fixtures have
+    already been loaded.  Each blocked boundary records the attempted effect so
+    the oracle trace is based on observation rather than an untouched probe.
+    """
+
+    def blocked(effect: str):
+        def refuse(*_args, **_kwargs):
+            probe.record(effect)
+            raise ForbiddenSideEffectError(
+                f"pure policy crossed forbidden boundary: {effect}"
+            )
+
+        return refuse
+
+    patches = (
+        patch.object(builtins, "open", blocked("filesystem_write")),
+        patch.object(io, "open", blocked("filesystem_write")),
+        patch.object(sqlite3, "connect", blocked("filesystem_write")),
+        patch.object(os, "system", blocked("process_spawn")),
+        patch.object(subprocess, "Popen", blocked("process_spawn")),
+        patch.object(subprocess, "run", blocked("process_spawn")),
+        patch.object(socket, "create_connection", blocked("network_call")),
+        patch.object(urllib.request, "urlopen", blocked("network_call")),
+        patch.object(http.client.HTTPConnection, "connect", blocked("network_call")),
+        patch.object(http.client.HTTPSConnection, "connect", blocked("network_call")),
+    )
+    with ExitStack() as stack:
+        for boundary_patch in patches:
+            stack.enter_context(boundary_patch)
+        yield

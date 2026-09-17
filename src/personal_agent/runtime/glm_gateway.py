@@ -391,13 +391,15 @@ def _declarations(envelope: ContextEnvelope) -> list[dict[str, Any]]:
 
     Re-deriving them from a tool list here would let the request carry something
     the budget never counted. The envelope's rendered text is what was measured,
-    so it is also what is sent.
+    so it is also what is sent. The same strict loader as the arguments path
+    refuses duplicate keys — the input is builder-rendered and trusted, so this
+    is hardening at no behavioural cost rather than an adversarial boundary.
     """
     parsed: list[dict[str, Any]] = []
     for text in envelope.texts_of(ComponentKind.TOOL_DECLARATION):
         try:
-            declaration = json.loads(text)
-        except json.JSONDecodeError as exc:  # pragma: no cover - builder-rendered
+            declaration = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+        except (_DuplicateJsonKey, json.JSONDecodeError) as exc:  # pragma: no cover - builder-rendered
             raise ModelGatewayError(
                 "context envelope carried a malformed tool declaration"
             ) from exc
@@ -812,8 +814,39 @@ def _unsupported_part_fields(part: Any) -> set[str]:
     }
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """object_pairs_hook that refuses a JSON object carrying duplicate keys.
+
+    Model output is untrusted input: `{"amount":"1.00","amount":"900.00"}` is
+    an ambiguity the model produced, not a value the parser may resolve. Plain
+    `json.loads` is last-wins at every depth, which would silently choose a
+    value on the model's behalf — the exact fail-open shape the 2026-09-07
+    review's F6 pinned. The hook runs for every nested object, so a duplicate
+    anywhere in the arguments refuses the whole payload.
+    """
+    seen: set[str] = set()
+    for key, _value in pairs:
+        if key in seen:
+            raise _DuplicateJsonKey(key)
+        seen.add(key)
+    return dict(pairs)
+
+
+class _DuplicateJsonKey(ValueError):
+    """Internal marker: a duplicate key was observed during strict parsing."""
+
+    def __init__(self, key: str) -> None:
+        super().__init__(f"duplicate JSON object key {key!r}")
+
+
 def _parse_arguments(raw: Any) -> dict[str, Any]:
     if isinstance(raw, dict):
+        # An already-parsed dict arrives when the SDK decoded the arguments
+        # before this gateway saw them. Duplicate keys in that path were
+        # collapsed upstream and are undetectable here; the dict is passed
+        # through by identity rather than re-serialised, and the
+        # duplicate-key guarantee covers the raw-string path below, which is
+        # the boundary this gateway owns.
         return raw
     if not isinstance(raw, str):
         raise _invalid_model_response(
@@ -822,7 +855,13 @@ def _parse_arguments(raw: Any) -> dict[str, Any]:
             response_shape="tool_arguments",
         )
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+    except _DuplicateJsonKey as exc:
+        raise _invalid_model_response(
+            "tool call arguments contained a duplicate JSON key",
+            reason=ModelFailureReason.RESPONSE_SCHEMA_INVALID,
+            response_shape="tool_arguments_duplicate_key",
+        ) from exc
     except json.JSONDecodeError as exc:
         raise _invalid_model_response(
             "tool call arguments were not valid JSON",

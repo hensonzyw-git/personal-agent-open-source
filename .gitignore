@@ -53,6 +53,8 @@ ios/**/.swiftpm/
 ios/**/*.xcodeproj/project.xcworkspace/
 ios/**/*.xcodeproj/xcuserdata/
 DerivedData/
+tmp-monitor-t1.sh
+
 
 # Agent worktrees. Scratch checkouts of this same repository: the commits live
 # on their branches, so tracking the directories would vendor the repo into

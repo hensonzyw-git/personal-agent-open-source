@@ -1,0 +1,161 @@
+{
+  "fixture_catalog_sha256": "83b55e4c00ed9278d87bea9186c1adca558b6a0a27a153f5c3cdf1c08d0d108d",
+  "manifest_sha256": "ef3dfe69e7de8945253a815c37e04d2aa41e6a95e9b81a5e5964f2bd22342104",
+  "manifest_version": "1.0",
+  "oracle_catalog_sha256": "5e64a4604d5f3dfa0214c606075d974dacface6faef38e6671d22175bab6cc1a",
+  "registry_sha256": "0a333922f31e0679e5488822607367253a559290729a87186255bc830736c25c",
+  "schema_version": "dal.controller-dispatch-manifest/1.0",
+  "test_variants": [
+    {
+      "fixture_ref": "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/provider_node_empty_response/G3/1.0",
+      "oracle_id": "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/provider_node_empty_response/G3/1.0",
+      "owner_tasks": [
+        "DAL-011"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "provider_node_empty_response"
+    },
+    {
+      "fixture_ref": "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/provider_node_cancelled/G3/1.0",
+      "oracle_id": "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/provider_node_cancelled/G3/1.0",
+      "owner_tasks": [
+        "DAL-011"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "provider_node_cancelled"
+    },
+    {
+      "fixture_ref": "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/provider_node_cancelled_no_receipt/G3/1.0",
+      "oracle_id": "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/provider_node_cancelled_no_receipt/G3/1.0",
+      "owner_tasks": [
+        "DAL-011"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "provider_node_cancelled_no_receipt"
+    },
+    {
+      "fixture_ref": "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/provider_node_wrong_route/G3/1.0",
+      "oracle_id": "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/provider_node_wrong_route/G3/1.0",
+      "owner_tasks": [
+        "DAL-011"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "provider_node_wrong_route"
+    },
+    {
+      "fixture_ref": "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/handler_pass_fail_composition/G3/1.0",
+      "oracle_id": "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/handler_pass_fail_composition/G3/1.0",
+      "owner_tasks": [
+        "DAL-011"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "handler_pass_fail_composition"
+    },
+    {
+      "fixture_ref": "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/deterministic_node_no_provider/G3/1.0",
+      "oracle_id": "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/deterministic_node_no_provider/G3/1.0",
+      "owner_tasks": [
+        "DAL-011"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "deterministic_node_no_provider"
+    },
+    {
+      "fixture_ref": "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/transition_legality/G3/1.0",
+      "oracle_id": "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/transition_legality/G3/1.0",
+      "owner_tasks": [
+        "DAL-011"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "transition_legality"
+    },
+    {
+      "fixture_ref": "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/round_dispatch_first/G3/1.0",
+      "oracle_id": "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/round_dispatch_first/G3/1.0",
+      "owner_tasks": [
+        "DAL-011"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "round_dispatch_first"
+    },
+    {
+      "fixture_ref": "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/round_dispatch_post_fix/G3/1.0",
+      "oracle_id": "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/round_dispatch_post_fix/G3/1.0",
+      "owner_tasks": [
+        "DAL-011"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "round_dispatch_post_fix"
+    },
+    {
+      "fixture_ref": "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/round_dispatch_gaps_only/G3/1.0",
+      "oracle_id": "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/round_dispatch_gaps_only/G3/1.0",
+      "owner_tasks": [
+        "DAL-011"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "round_dispatch_gaps_only"
+    },
+    {
+      "fixture_ref": "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/round_dispatch_after_replan/G3/1.0",
+      "oracle_id": "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/round_dispatch_after_replan/G3/1.0",
+      "owner_tasks": [
+        "DAL-011"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "round_dispatch_after_replan"
+    },
+    {
+      "fixture_ref": "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/loop_limit_in_fixing/G3/1.0",
+      "oracle_id": "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/loop_limit_in_fixing/G3/1.0",
+      "owner_tasks": [
+        "DAL-011"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "loop_limit_in_fixing"
+    },
+    {
+      "fixture_ref": "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/seam_injection_no_subprocess/G3/1.0",
+      "oracle_id": "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/seam_injection_no_subprocess/G3/1.0",
+      "owner_tasks": [
+        "DAL-011"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "seam_injection_no_subprocess"
+    },
+    {
+      "fixture_ref": "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/seam_subprocess_gated/G3/1.0",
+      "oracle_id": "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/seam_subprocess_gated/G3/1.0",
+      "owner_tasks": [
+        "DAL-011"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "seam_subprocess_gated"
+    },
+    {
+      "fixture_ref": "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/drift_fail_closed/G3/1.0",
+      "oracle_id": "dal.controller-dispatch.oracle/DAL-T-GRAPH-001/drift_fail_closed/G3/1.0",
+      "owner_tasks": [
+        "DAL-011"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-GRAPH-001",
+      "variant_id": "drift_fail_closed"
+    }
+  ],
+  "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06"
+}

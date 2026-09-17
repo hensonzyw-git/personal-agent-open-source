@@ -493,6 +493,15 @@ def _run_operation(
     prior_clarification_question: str | None = None,
     action_keyring: KeyRing | None = None,
 ) -> RunResult:
+    # Capture every row fact the turn needs while the opening transaction is
+    # still usable. After the commits below, reading an ORM attribute would
+    # autobegin a read transaction that the model or MCP call then holds open
+    # -- exactly the stale-snapshot failure F1 (2026-09-07 review) pinned.
+    operation_id = operation.operation_id
+    trace_id = operation.trace_id
+    received_at = operation.api_request.received_at
+    idempotency_key = operation.idempotency_key
+
     # An operation that already knows its write skips interpretation entirely:
     # a `write anyway` override, or a deterministic user action such as the
     # receipt card's category picker. Neither has anything to ask a model.
@@ -571,8 +580,8 @@ def _run_operation(
             # fail safely, but cannot ask the user for today's date.
             logger.info(
                 "model date clarification retried operation_id=%s trace_id=%s",
-                operation.operation_id,
-                operation.trace_id,
+                operation_id,
+                trace_id,
             )
             envelope = envelope.with_finance_date_default_retry()
             interpretation = interpreter.interpret(envelope=envelope)
@@ -581,8 +590,8 @@ def _run_operation(
         # operation is still pre-submit, so this cannot hide a side effect.
         logger.warning(
             "model turn failed operation_id=%s trace_id=%s reason=%s",
-            operation.operation_id,
-            operation.trace_id,
+            operation_id,
+            trace_id,
             exc.failure_reason,
         )
         _step(session, operation, "interpreting", now)
@@ -614,8 +623,8 @@ def _run_operation(
         logger.info(
             "model response accepted operation_id=%s trace_id=%s "
             "response_disposition=tool_text_suppressed_untrusted",
-            operation.operation_id,
-            operation.trace_id,
+            operation_id,
+            trace_id,
         )
 
     if isinstance(interpretation, Clarification):
@@ -744,7 +753,7 @@ def _run_operation(
         )
 
     model_args = _with_host_defaulted_occurred_on(
-        envelope, operation, interpretation
+        envelope, received_at, interpretation
     )
     try:
         cleaned = authorize(tool=interpretation.tool, model_args=model_args)
@@ -757,7 +766,7 @@ def _run_operation(
     outcome = dispatcher.resolve(
         tool=interpretation.tool,
         model_args=cleaned,
-        idempotency_key=operation.idempotency_key,
+        idempotency_key=idempotency_key,
     )
     return _apply_resolve(
         session,
@@ -1070,7 +1079,7 @@ def resume_action_plan(
 
 
 def _with_host_defaulted_occurred_on(
-    envelope: ContextEnvelope, operation: Operation, interpretation: ToolCall
+    envelope: ContextEnvelope, received_at: datetime, interpretation: ToolCall
 ) -> dict[str, Any]:
     """Fill an omitted Finance write date only when source text had no date.
 
@@ -1079,7 +1088,9 @@ def _with_host_defaulted_occurred_on(
     omitted date after an explicit user date is also not repaired: it must fail
     safely rather than turn yesterday's payment into today.  Where defaulting is
     allowed, the durable request receipt, rather than the worker's clock,
-    defines "today".
+    defines "today".  `received_at` is a captured local, not a row read: this
+    runs after the model call, and an ORM attribute access here would reopen a
+    transaction the next external call then holds open.
     """
     arguments = interpretation.model_args
     if (
@@ -1090,9 +1101,7 @@ def _with_host_defaulted_occurred_on(
         return arguments
     return {
         **arguments,
-        "occurred_on": format_ledger_date(
-            ledger_date(operation.api_request.received_at)
-        ),
+        "occurred_on": format_ledger_date(ledger_date(received_at)),
     }
 
 
@@ -1373,10 +1382,16 @@ def _run_override(
     keyring: KeyRing,
     now: Clock,
 ) -> RunResult:
+    # Read every row fact before the first commit in `_step`; after it, an
+    # attribute access would autobegin a read transaction the external
+    # `dispatcher.commit` call then holds open (the F1 failure shape).
+    request_id = operation.request_id
+    encrypted_payload = operation.api_request.encrypted_request_payload
+    duplicate_override = operation.duplicate_check_id
     intent = open_intent(
         keyring,
-        request_id=operation.request_id,
-        envelope=operation.api_request.encrypted_request_payload,
+        request_id=request_id,
+        envelope=encrypted_payload,
     )
     _step(session, operation, "interpreting", now)
     _step(session, operation, "dispatching", now, tool=intent.tool)
@@ -1385,7 +1400,7 @@ def _run_override(
         operation,
         intent=intent,
         dispatcher=dispatcher,
-        duplicate_override=operation.duplicate_check_id,
+        duplicate_override=duplicate_override,
         keyring=keyring,
         now=now,
     )
@@ -1403,12 +1418,17 @@ def _commit(
     prior_clarification_question: str | None = None,
     run_submission=None,
 ) -> RunResult:
+    # Everything the external call needs is read *before* the last commit: the
+    # post-commit row must not be touched (an attribute read would autobegin a
+    # read transaction that the external call would then hold open).
     # Commit `source_in_progress` before the write can occur: from here a cancel
     # can no longer be reported as a clean pre-submit cancellation.
-    _step(session, operation, "source_in_progress", now, tool=intent.tool, run_submission=run_submission)
+    source_state = _step(session, operation, "source_in_progress", now, tool=intent.tool, run_submission=run_submission)
     # This is deliberately a real transaction boundary, not merely a flush.
     # If the process dies after Finance accepts the idempotency key, startup
     # recovery must see a post-submit Agent operation and project Finance truth.
+    # Re-read the dispatch key after the run submission transition, then close
+    # that snapshot too before crossing the external boundary.
     session.commit()
     session.refresh(operation)
     dispatch_key = operation.idempotency_key
@@ -1476,8 +1496,9 @@ def _commit(
         # edge, and stamping `failure_reason` would age `updated_at` and describe
         # a failure that has not been established. The reason travels to the
         # caller only, as the transient explanation of why this turn ended
-        # without a verdict.
-        return RunResult(state=operation.state, failure_reason=outcome.reason)
+        # without a verdict. The state is the committed local, not a post-commit
+        # row read (which would reopen a transaction after the external call).
+        return RunResult(state=source_state, failure_reason=outcome.reason)
     if isinstance(outcome, CommitFailedSafe):
         _step(session, operation, "failed_safe", now, failure_reason=outcome.reason)
         return RunResult(state="failed_safe", failure_reason=outcome.reason)
@@ -1604,7 +1625,7 @@ def _step(
     zero_write_proven: bool = False,
     run_submission=None,
     commit_transition=True,
-) -> None:
+) -> str:
     session.refresh(operation)
     transition_operation(
         session,
@@ -1629,7 +1650,8 @@ def _step(
     # a later write fail.
     if commit_transition:
         session.commit()
-    session.refresh(operation)
+    # Return the committed fact without opening a new ORM read snapshot.
+    return target
 
 
 def _moment(clock: Clock) -> datetime:

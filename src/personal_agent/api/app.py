@@ -232,7 +232,9 @@ class AuthContext:
     #: Read from the request header and never persisted: reading it per request
     #: is what covers all three delivery doors at once, because the 200 reply,
     #: the by-id poll and a replay are each a device-authenticated request.
-    client_wire_version: int
+    client_wire_version: int = 1
+    subject_id: str | None = None
+    key_thumbprint: str | None = None
 
     @property
     def chat_runtime_v2(self):
@@ -312,6 +314,7 @@ class AgentApiDeps:
     #: `CAP-001` design §7.3/§8. Runs the Compactor for one Session after a turn
     #: whose input crossed the soft limit. `None` means no Compactor provider is
     #: composed, and the signal is then recorded and not acted on.
+    dal_resume: Any | None = None
     v2_device_ids: frozenset[str] = frozenset()
     v2_execution_enabled: bool = True
     trip_query_enabled: bool = False
@@ -554,11 +557,30 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         await asyncio.sleep(0)
         await bounded(tuple(compaction_tasks))
 
+    async def join_before_cancel(task):
+        """Defer caller cancellation until dependency-using work has settled."""
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except BaseException:
+                break
+        if cancelled:
+            # Retrieve any failure without serializing sensitive exception text.
+            if not task.cancelled():
+                task.exception()
+            raise asyncio.CancelledError
+        return task.result()
+
     async def resume_v2(stop):
         from personal_agent.api.runtime_v2 import resumable
         while not stop.is_set():
             try:
-                for operation_id, auth in await asyncio.to_thread(resumable,deps):
+                for operation_id, auth in await join_before_cancel(
+                    asyncio.create_task(asyncio.to_thread(resumable, deps))
+                ):
                     if operation_id in operation_tasks:continue
                     task=asyncio.create_task(asyncio.to_thread(_process_chat,deps,auth,operation_id))
                     operation_tasks[operation_id]=task
@@ -571,14 +593,71 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        stop=asyncio.Event()
+        async def deliveries():
+            import sqlite3
+            import threading
+            from sqlalchemy.exc import OperationalError
+            retry_delay = 0.25
+            while True:
+                # Cancellation cannot stop a running thread. Drain it before the
+                # lifespan releases dependencies; never start another delivery.
+                stop = threading.Event()
+                flight = asyncio.create_task(asyncio.to_thread(deps.dal_resume.deliver_pending, stop_event=stop))
+                try:
+                    await asyncio.shield(flight)
+                except asyncio.CancelledError:
+                    stop.set()
+                    await join_before_cancel(asyncio.gather(flight, return_exceptions=True))
+                    raise
+                except (sqlite3.OperationalError, OperationalError, OSError):
+                    logger.warning("DAL resume delivery transient failure; retrying")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 30.0)
+                    continue
+                except Exception:
+                    logger.error("DAL resume delivery stopped: unexpected failure")
+                    raise
+                retry_delay = 0.25
+                await asyncio.sleep(5)
+        task = recovery = None
+        _app.state.dal_resume_delivery_task = None
+        _app.state.adk_recovery_task = None
+        stop = asyncio.Event()
         from personal_agent.api.runtime_v2 import recovery_needed
-        recovery=asyncio.create_task(resume_v2(stop)) if await asyncio.to_thread(recovery_needed,deps) else None
-        try:yield
+        try:
+            # Discover before starting delivery; cancellation still joins this
+            # database-using thread before composition can release its engine.
+            needed = await join_before_cancel(
+                asyncio.create_task(asyncio.to_thread(recovery_needed, deps))
+            )
+            task = asyncio.create_task(deliveries()) if deps.dal_resume else None
+            _app.state.dal_resume_delivery_task = task
+            if task:
+                # Retrieve failures promptly with only fixed-classification logs.
+                task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            recovery = asyncio.create_task(resume_v2(stop)) if needed else None
+            _app.state.adk_recovery_task = recovery
+            if recovery:
+                recovery.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+            yield
         finally:
-            stop.set()
-            if recovery is not None: await recovery
-            await drain_background_tasks()
+            async def cleanup():
+                stop.set()
+                if task:
+                    task.cancel()
+                try:
+                    if recovery is not None:
+                        await recovery
+                finally:
+                    try:
+                        if task:
+                            await asyncio.gather(task, return_exceptions=True)
+                    finally:
+                        await drain_background_tasks()
+
+            # A second cancellation must not abandon the delivery thread or skip
+            # ADK/background drains. systemd bounds the whole process instead.
+            await join_before_cancel(asyncio.create_task(cleanup()))
 
     app = FastAPI(lifespan=lifespan)
     # The service composition runs one API process. Hold admission across both
@@ -697,6 +776,8 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             raise _Unauthenticated("device is not active")
         return AuthContext(
             device_id=device.device_id,
+            subject_id=claims["sub"],
+            key_thumbprint=claims["device_key_thumbprint"],
             scopes=tuple(claims.get("scopes", [])),
             # A short-lived token proves enrollment, but it intentionally does
             # not freeze the device's governed tool binding.  Rebinding tools
@@ -707,6 +788,9 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 request.headers.get(CLIENT_WIRE_VERSION_HEADER)
             ),
         )
+
+    from personal_agent.api.dal_resume import mount_routes
+    mount_routes(app, deps, authenticate)
 
     def idempotency_key(request: Request) -> str:
         key = request.headers.get("idempotency-key", "").strip()

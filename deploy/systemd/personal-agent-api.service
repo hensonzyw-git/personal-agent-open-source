@@ -70,6 +70,12 @@ ExecStart=/opt/personal-agent/.venv/bin/personal-agent-api \
     --finance-control-url http://127.0.0.1:8811
 Restart=on-failure
 RestartSec=5s
+# Graceful lifespan joins delivery threads before releasing dependencies.
+# A stuck drain instead stops the entire control group after this deadline;
+# interrupted external outcomes remain unknown and require durable recovery.
+TimeoutStopSec=60s
+KillMode=control-group
+SendSIGKILL=yes
 
 # Socket directory, chowned to personal-agent-api:www-data by systemd. It is
 # the access boundary for the API: only Nginx's group can reach the socket

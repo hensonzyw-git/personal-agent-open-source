@@ -73,6 +73,10 @@ OPERATION_COMMAND_TYPES = {
     "DAL-T-PROVIDER-ROUTE-001": "route_provider_attempt",
     "DAL-T-RESTART-001": "resume_persisted_run",
     "DAL-T-EFFECT-OWNERSHIP-001": "dispatch_effect_outcome_sequence",
+    "DAL-T-PLAN-XFIELD-001": "validate_plan_cross_fields",
+    "DAL-T-DISPOSITION-001": "recompute_review_disposition",
+    "DAL-T-OPENSET-001": "derive_open_finding_set",
+    "DAL-T-FIXDIFF-001": "validate_post_fix_verdict",
 }
 OPERATION_BINDINGS = {
     "DAL-T-SM-001": ("service", "workflow-service"),
@@ -113,6 +117,10 @@ OPERATION_BINDINGS = {
     "DAL-T-PROVIDER-ROUTE-001": ("service", "provider-adapter"),
     "DAL-T-RESTART-001": ("service", "workflow-service"),
     "DAL-T-EFFECT-OWNERSHIP-001": ("service", "workflow-service"),
+    "DAL-T-PLAN-XFIELD-001": ("service", "planner"),
+    "DAL-T-DISPOSITION-001": ("service", "review-controller"),
+    "DAL-T-OPENSET-001": ("service", "review-controller"),
+    "DAL-T-FIXDIFF-001": ("service", "review-controller"),
 }
 WRITE_SETS = {
     "A": BASE_WRITES,
@@ -159,6 +167,31 @@ def default_applied_write_set(entity_type: str, event_trace: list[str]) -> list[
 
 def digest(value: object) -> str:
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+
+def synthetic_state_binding(*, feature_id: str, version: int, state: str) -> dict:
+    checkpoint_states = {
+        "blocked_requirement", "blocked_usage", "blocked_auth", "blocked_test",
+        "blocked_external_prerequisite", "blocked_unknown", "needs_human", "paused",
+    }
+    return {
+        "schema_version": "dal.state-binding/1.0",
+        "feature_id": feature_id,
+        "feature_version": version,
+        "feature_state": state,
+        "checkpoint_state": "coding" if state in checkpoint_states else None,
+        "reason_code": None,
+        "plan_version": None,
+        "artifact_sha256": None,
+        "repository_id": "repo-placeholder",
+        "base_sha": "0" * 40,
+        "result_sha": None,
+        "last_verified_sha": None,
+        "decision_frontier_version": 1,
+        "policy_version": "dal-policy/1.0",
+        "capability_epoch": 1,
+        "external_effect_inventory_sha256": hashlib.sha256(b"").hexdigest(),
+    }
 
 
 def semantic_operation_input(
@@ -222,32 +255,70 @@ def semantic_operation_input(
             "approval_expired": {"server_now": "2026-08-09T12:06:00Z", "decision": dict(decision, expires_at="2026-08-09T12:10:00Z")},
             "decision_expired": {"server_now": "2026-08-09T12:06:00Z", "approval": dict(approval, expires_at="2026-08-09T12:10:00Z"), "decision": dict(decision, expires_at="2026-08-09T12:05:00Z")},
         }[variant]
-        facts = {"server_now": now, "approval": approval, "decision": decision, "submitted_decision_version": 3, **changes}
+        observed_state_sha256 = digest(
+            synthetic_state_binding(
+                feature_id=target["entity_id"],
+                version=target["version"],
+                state=target["state"],
+            )
+        )
+        facts = {"server_now": now, "approval": approval, "decision": decision, "submitted_decision_version": 3, "observed_state_sha256": observed_state_sha256, **changes}
         actions, results = ([{"command": "approve_plan", "decision_id": "decision-0001", "approval_id": "approval-0001"}], [])
     elif test_id == "DAL-T-STATEHASH-001":
-        protected = {"aggregate_version": 7, "base_sha": "1" * 40, "plan_sha256": "1" * 64, "ordered_steps": ["plan", "approve"], "effect_inventory": ["effect-a", "effect-b"]}
+        protected = {
+            "schema_version": "dal.state-binding/1.0",
+            "feature_id": "fixture-entity",
+            "feature_version": 7,
+            "feature_state": "awaiting_plan_review",
+            "checkpoint_state": "coding",
+            "reason_code": None,
+            "plan_version": 1,
+            "artifact_sha256": None,
+            "repository_id": "repo-0001",
+            "base_sha": "1" * 40,
+            "result_sha": None,
+            "last_verified_sha": None,
+            "decision_frontier_version": 3,
+            "policy_version": "dal-policy/1.0",
+            "capability_epoch": 1,
+            "external_effect_inventory_sha256": digest({"effects": ["effect-a", "effect-b"]}),
+        }
         submitted = json.loads(json.dumps(protected))
         if variant == "field": submitted["base_sha"] = "2" * 40
-        elif variant == "order": submitted["ordered_steps"] = ["approve", "plan"]
+        elif variant == "order": submitted["external_effect_inventory_sha256"] = digest({"effects": ["effect-b", "effect-a"]})
         elif variant == "null": submitted["base_sha"] = None
-        elif variant == "version": submitted["aggregate_version"] = 6
+        elif variant == "version": submitted["feature_version"] = 6
         elif variant == "forged_digest": submitted["binding_sha256"] = "f" * 64
-        elif variant == "effect_inventory_order": submitted["effect_inventory"] = ["effect-b", "effect-a"]
-        elif variant == "effect_inventory_membership": submitted["effect_inventory"] = ["effect-a", "effect-c"]
+        elif variant == "effect_inventory_order": submitted["external_effect_inventory_sha256"] = digest({"effects": ["effect-b", "effect-a"], "schema_version": "dal.external-effect-inventory-binding/1.0"})
+        elif variant == "effect_inventory_membership": submitted["external_effect_inventory_sha256"] = digest({"effects": ["effect-a", "effect-c"]})
         actions = [{"command": "consume_decision", "decision_id": "decision-0001"}]
-        facts = {"protected_binding": protected, "submitted_binding": submitted, "canonicalizer": "rfc8785-jcs", "protected_binding_sha256": digest(protected)}
+        facts = {"protected_binding": protected, "current_binding": submitted, "protected_binding_sha256": digest(protected), "observed_binding_sha256": digest(protected)}
         results = []
     elif test_id == "DAL-T-ARTIFACTHASH-001":
-        protected = {"body_sha256": "1" * 64, "body_size": 128, "media_type": "text/markdown", "canonicalizer": "rfc8785-jcs", "metadata": {"path": "plan.md", "version": 1}}
+        canonical_body = "a" * 128
+        protected = {
+            "schema_version": "dal.artifact-binding/1.0",
+            "artifact_schema_version": "dal.plan-artifact/1.0",
+            "media_type": "text/markdown",
+            "feature_id": "fixture-entity",
+            "artifact_kind": "plan",
+            "artifact_version": 1,
+            "base_sha": "1" * 40,
+            "body_canonicalization": "utf8-lf-nfc/1.0",
+            "body_sha256": hashlib.sha256(canonical_body.encode("utf-8")).hexdigest(),
+            "body_size": len(canonical_body.encode("utf-8")),
+            "acceptance_sha256": None,
+            "allowed_paths_sha256": None,
+        }
         submitted = json.loads(json.dumps(protected))
         if variant == "body": submitted["body_sha256"] = "2" * 64
-        elif variant == "metadata": submitted["metadata"]["version"] = 2
-        elif variant == "canonicalizer": submitted["canonicalizer"] = "json-default"
-        elif variant == "field_boundary": submitted["metadata"] = {"path": "plan.md", "version": "1"}
+        elif variant == "metadata": submitted["artifact_version"] = 2
+        elif variant == "canonicalizer": submitted["body_canonicalization"] = "json-default"
+        elif variant == "field_boundary": submitted["artifact_version"] = "1"
         elif variant == "forged_digest": submitted["binding_sha256"] = "f" * 64
         actions = [{"command": "consume_artifact_approval", "artifact_id": "artifact-0001"}]
-        facts = {"protected_artifact": protected, "submitted_artifact": submitted, "protected_binding_sha256": digest(protected)}
-        results = [{"source": "artifact_store", "status": "completed", "body_size": 128, "body_sha256": "1" * 64}]
+        facts = {"protected_artifact": protected, "current_artifact": submitted, "protected_binding_sha256": digest(protected), "observed_binding_sha256": digest(protected)}
+        results = [{"source": "artifact_store", "status": "completed", "canonical_body_utf8": canonical_body}]
     elif test_id == "DAL-T-REC-001":
         transport = {
             "synthetic_kill": "process_killed_after_dispatch",
@@ -437,22 +508,55 @@ def semantic_operation_input(
         facts = {"server_now": now, "server_projection": server, "latest_projection_id": "projection-0005"}
         results = [{"source": "decision_store", "status": "completed", "projection": server}]
     elif test_id == "DAL-T-DOCK-001":
-        candidates = [
-            {"decision_id": "d1", "risk": "high", "deadline": "2026-08-09T12:01:00Z", "root_id": "r1", "depends_on": []},
-            {"decision_id": "d2", "risk": "medium", "deadline": "2026-08-09T12:02:00Z", "root_id": "r2", "depends_on": []},
-        ]
-        if variant == "tie": candidates[1].update({"risk": "high", "deadline": candidates[0]["deadline"]})
-        elif variant == "dependency": candidates[0]["depends_on"] = ["d2"]
-        elif variant == "same_root": candidates[1]["root_id"] = "r1"
-        elif variant == "bulk_high_risk": candidates = [dict(candidates[0], decision_id=f"d{i}") for i in range(1, 7)]
-        actions, facts, results = ([{"command": "rank_decisions"}, {"command": "project_decision_dock", "maximum_items": 5}], {"server_now": "2026-08-09T12:00:00Z", "candidates": candidates, "stable_tiebreaker": "decision_id"}, [])
+        # §3.5.1: rank inputs are the frozen first-match fields, not a free
+        # `risk`/`deadline` guess. Each candidate carries the closed set below.
+        def cand(
+            decision_id, *,
+            root_id, expires_at,
+            safety_or_irreversible=False, blocking_scope="none", depends_on=None,
+            status="open", created_at="2026-08-09T11:00:00Z",
+        ):
+            return {
+                "decision_id": decision_id, "root_id": root_id, "status": status,
+                "safety_or_irreversible": safety_or_irreversible,
+                "blocking_scope": blocking_scope,
+                "depends_on": depends_on or [],
+                "expires_at": expires_at, "created_at": created_at,
+            }
+
+        if variant == "mixed_rank":
+            candidates = [
+                cand("d1", root_id="r1", expires_at="2026-08-09T12:01:00Z", blocking_scope="global"),
+                cand("d2", root_id="r2", expires_at="2026-08-09T12:20:00Z"),
+            ]
+        elif variant == "tie":
+            candidates = [
+                cand("d1", root_id="r1", expires_at="2026-08-09T12:01:00Z", blocking_scope="global"),
+                cand("d2", root_id="r2", expires_at="2026-08-09T12:01:00Z", blocking_scope="global"),
+            ]
+        elif variant == "dependency":
+            candidates = [
+                cand("d1", root_id="r1", expires_at="2026-08-09T12:01:00Z", blocking_scope="global", depends_on=["d2"]),
+                cand("d2", root_id="r2", expires_at="2026-08-09T12:20:00Z"),
+            ]
+        elif variant == "same_root":
+            candidates = [
+                cand("d1", root_id="r1", expires_at="2026-08-09T12:01:00Z", blocking_scope="global"),
+                cand("d2", root_id="r1", expires_at="2026-08-09T12:20:00Z"),
+            ]
+        elif variant == "bulk_high_risk":
+            candidates = [
+                cand(f"d{i}", root_id=f"r{i}", expires_at="2026-08-09T12:05:00Z", safety_or_irreversible=True)
+                for i in range(1, 7)
+            ]
+        actions, facts, results = ([{"command": "rank_decisions"}, {"command": "project_decision_dock", "maximum_items": 5}], {"source": "decision-store"}, [{"source": "decision-store", "status": "completed", "server_now": "2026-08-09T12:00:00Z", "candidates": candidates}])
     elif test_id == "DAL-T-BATCH-001":
         base_time = "2026-08-09T12:00:00Z"
-        valid = {"decision_id": "d1", "status": "open", "risk": "medium", "created_at": base_time, "expires_at": "2026-08-09T12:10:00Z"}
+        valid = {"decision_id": "d1", "status": "open", "notification_priority": "normal", "created_at": base_time, "expires_at": "2026-08-09T12:10:00Z"}
         if variant == "all_invalid":
             members = [dict(valid, decision_id="d-expired", status="expired"), dict(valid, decision_id="d-resolved", status="resolved")]
         elif variant == "fifth_item": members = [dict(valid, decision_id=f"d{i}") for i in range(1, 6)]
-        elif variant == "high_risk_interrupt": members = [valid, dict(valid, decision_id="d2", risk="high")]
+        elif variant == "high_risk_interrupt": members = [valid, dict(valid, decision_id="d2", notification_priority="immediate")]
         else: members = [valid, dict(valid, decision_id="d2")]
         actions = [{"command": "open_fixed_window", "deadline": "2026-08-09T12:02:00Z"}, {"command": "evaluate_members"}, {"command": "flush_once"}]
         facts = {"server_now": "2026-08-09T12:03:00Z" if variant in {"continuous", "service_restart"} else base_time, "members": members, "persisted_window": {"opened_at": base_time, "deadline": "2026-08-09T12:02:00Z"} if variant == "service_restart" else None, "maximum_items": 5}
@@ -488,6 +592,166 @@ def semantic_operation_input(
         actions = [{"command": "load_persisted_run"}, {"command": "evaluate_loop_budget"}, {"command": "resume_or_block"}]
         facts = {"provider_attempt_count": 3 if retry else 1, "transient_retry_count": 2 if retry else 0, "review_fix_count": 3 if not retry else 0, "max_transient_retries": 2, "max_review_fixes": 3, "execution_host": "home_mac" if variant.startswith("mac_") else "service"}
         results = [{"source": "run_store", "status": "completed", "persisted_counters_present": True}]
+    elif test_id == "DAL-T-PLAN-XFIELD-001":
+        tasks = [{"task_id": "T-1", "order": 1, "title": "Implement importer", "allowed_paths": [{"path": "src/importer", "path_type": "directory"}], "acceptance_ids": ["AC-1"], "dependency_task_ids": []}]
+        criteria = [{"acceptance_id": "AC-1", "description": "Rows import idempotently", "verification_ids": ["VR-1"]}]
+        if variant in {"paths_overlap_file_in_dir", "paths_overlap_dir_in_dir", "paths_overlap_equal", "order_gap", "dependency_not_earlier"}:
+            second_paths = {
+                "paths_overlap_file_in_dir": [{"path": "src/importer/patch.py", "path_type": "file"}],
+                "paths_overlap_dir_in_dir": [{"path": "src", "path_type": "directory"}],
+                "paths_overlap_equal": [{"path": "src/importer", "path_type": "directory"}],
+            }.get(variant, [{"path": "docs/patch-notes.md", "path_type": "file"}])
+            tasks.append({"task_id": "T-2", "order": 3 if variant == "order_gap" else 2, "title": "Add patch notes", "allowed_paths": second_paths, "acceptance_ids": ["AC-2"], "dependency_task_ids": []})
+            criteria.append({"acceptance_id": "AC-2", "description": "Patch notes rendered", "verification_ids": ["VR-1"]})
+            if variant == "dependency_not_earlier": tasks[0]["dependency_task_ids"] = ["T-2"]
+        if variant == "unknown_verification": criteria[0]["verification_ids"] = ["VR-404"]
+        plan = {
+            "schema_version": "dal.plan-artifact/1.0",
+            "feature_id": "feat-0002" if variant == "identity_mismatch" else "feat-0001",
+            "base_sha": "1" * 40,
+            "prd": {"scope": ["Import ledger rows"], "non_goals": [], "risks": []},
+            "technical_design": {"change_points": ["Add importer step"], "boundaries": ["No UI change"], "rollback_steps": ["Revert the importer commit"]},
+            "tasks": tasks,
+            "acceptance_criteria": criteria,
+        }
+        plan["allowed_paths_sha256"] = "0" * 64 if variant == "digest_drift" else digest([entry for task in sorted(tasks, key=lambda item: item["order"]) for entry in task["allowed_paths"]])
+        actions, facts, results = ([{"command": "validate_plan_cross_fields"}, {"command": "record_plan"}], {"input_manifest": {"feature_id": "feat-0001", "base_sha": "1" * 40}, "repo_rules_registry": [{"verification_id": "VR-1", "rule_id": "rule-import"}]}, [{"source": "planner", "status": "completed", "plan": plan}])
+    elif test_id == "DAL-T-DISPOSITION-001":
+        finding = {"finding_id": "F-1", "severity": "P2", "location": {"path": "src/importer/run.py", "line_start": 3, "line_end": 4, "anchor_sha": "3" * 40}, "summary": "Missing idempotency key", "failure_scenario": "Replay duplicates rows", "category": "correctness"}
+        findings = [finding] if variant in {"request_changes_findings", "provider_approve_with_findings"} else []
+        gaps = [{"acceptance_id": "AC-2", "summary": "Acceptance AC-2 left unreviewed", "failure_scenario": "Unreviewed acceptance ships a regression"}] if variant == "request_changes_gaps" else []
+        coverage = [] if variant == "coverage_incomplete" else [{"acceptance_id": "AC-1", "verification_ids": ["VR-1"]}, {"acceptance_id": "AC-2", "verification_ids": ["VR-2"]}]
+        disposition = "approve" if variant in {"approve_clean", "provider_approve_with_findings"} else "request_changes"
+        actions, facts, results = (
+            [{"command": "recompute_review_disposition"}, {"command": "record_review"}],
+            {"plan_acceptance_ids": ["AC-1", "AC-2"], "plan_verification_ids": {"AC-1": ["VR-1"], "AC-2": ["VR-2"]}, "recomputed_review_inputs": {"input_manifest_sha256": "a" * 64, "diff_base_sha": "1" * 40, "result_sha": "3" * 40}},
+            [{"source": "reviewer", "status": "completed", "disposition": disposition, "findings": findings, "acceptance_gaps": gaps, "coverage": coverage, "reviewed_input_manifest_sha256": "a" * 64, "reviewed_diff_base_sha": "1" * 40, "reviewed_result_sha": "3" * 40}],
+        )
+    elif test_id == "DAL-T-OPENSET-001":
+        path = "src/importer/run.py"
+
+        def resolution(finding_id: str, status: str, evidence: str) -> dict:
+            summary = f"{finding_id} covered this round" if status == "closed" else f"{finding_id} still open"
+            return {"finding_id": finding_id, "status": status, "summary": summary, "evidence_sha256": [evidence]}
+
+        def regression(finding_id: str, anchor: str) -> dict:
+            return {"finding_id": finding_id, "severity": "P2", "location": {"path": path, "line_start": 2, "line_end": 2, "anchor_sha": anchor}, "summary": "Regression in replay", "failure_scenario": "Replay duplicates rows again", "category": "correctness"}
+
+        if variant == "init_from_review":
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-1", "closed", "e" * 64)], [], "verified", [], "3" * 40, 3
+        elif variant == "carry_forward_exact":
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "closed", "e" * 64)], [], "verified", [regression("F-101", "4" * 40)], "4" * 40, 2
+        elif variant == "carried_finding_omitted":
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [], [], "changes_requested", [regression("F-101", "4" * 40)], "4" * 40, 2
+        elif variant == "carried_finding_renamed":
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-999", "closed", "e" * 64)], [], "changes_requested", [regression("F-101", "4" * 40)], "4" * 40, 2
+        elif variant == "new_finding_id_reused":
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "closed", "e" * 64)], [regression("F-1", "5" * 40)], "changes_requested", [regression("F-101", "4" * 40)], "4" * 40, 2
+        elif variant == "verified_with_new_findings":
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "closed", "e" * 64)], [regression("F-202", "5" * 40)], "verified", [regression("F-101", "4" * 40)], "4" * 40, 2
+        elif variant == "original_remaining_omitted":
+            #: Refreeze §2c D1 distinguishing variant: the original finding
+            #: stays open (V_1 resolved it remaining) while the chain carries
+            #: a new regression; the verdict resolves only the regression and
+            #: reports verified. The pre-refreeze whole-replacement rule saw
+            #: the chain's ids as the entire open set and accepted this; the
+            #: per-round derivation keeps F-1 open and blocks.
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "closed", "e" * 64)], [], "verified", [regression("F-101", "4" * 40)], "4" * 40, 2
+        elif variant == "prior_closed_carried_not_touched":
+            #: Round-3 review B2 distinguishing variant. F-101 is the carried
+            #: finding V_1 INTRODUCED (chain new_findings) and left open — it
+            #: was never closed by any verdict. This round resolves it
+            #: ``remaining`` and leaves its line untouched, which is legal:
+            #: the narrowed check (§6 L645-651) binds the increment-deletion
+            #: requirement to findings THIS round declares closed. The
+            #: pre-fix whole-chain deletion check iterated every carried
+            #: finding, demanded F-101's deletion again and blocked this.
+            #: The frozen variant id keeps its round-3 name (renaming it
+            #: would refreeze the manifest); round-4 review F5 records that
+            #: the actual shape is still-open-carried, not earlier-closed.
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "remaining", "a" * 64)], [], "changes_requested", [regression("F-101", "4" * 40)], "4" * 40, 3
+        else:
+            resolutions, new_findings, verdict_value, carried, anchor_sha, touched_line = [resolution("F-101", "remaining", "a" * 64)], [], "changes_requested", [regression("F-101", "4" * 40)], "4" * 40, 2
+        #: The chain entry now carries V_1's finding_resolutions so the
+        #: per-round carry-forward can remove V_1's closed findings (refreeze
+        #: §2c D1).
+        chain_resolutions = (
+            [resolution("F-1", "remaining", "a" * 64)]
+            if variant == "original_remaining_omitted"
+            else ([resolution("F-1", "closed", "e" * 64)] if variant != "init_from_review" else [])
+        )
+        chain = [] if variant == "init_from_review" else [{"sequence": 1, "result_sha": "4" * 40, "finding_resolutions": chain_resolutions, "new_findings": carried}]
+        increment = "@@ -1,5 +1,5 @@\n line1\n line2\n-old3\n+new3\n line4\n line5" if touched_line == 3 else "@@ -1,3 +1,3 @@\n line1\n-old2\n+new2\n line3"
+        actions, facts, results = (
+            [{"command": "derive_open_finding_set"}, {"command": "record_review"}],
+            {
+                "original_review": {"finding_ids": ["F-1"], "acceptance_gap_ids": []},
+                "prior_verdict_chain": chain,
+                "manifest_roles": {"e" * 64: "fix_diff", "a" * 64: "review_findings"},
+                "round_anchors": {"anchor_sha": anchor_sha, "previous_result_sha": anchor_sha},
+                "recomputed_result_sha": "5" * 40,
+            },
+            [
+                {"source": "git_executor", "status": "completed", "path": path, "anchor_tree_entry": {"mode": "100644", "type": "blob", "present": True}, "previous_tree_entry": {"mode": "100644", "type": "blob", "present": True}, "current_tree_entry": {"mode": "100644", "type": "blob", "present": True}, "anchor_translation_diff": None, "increment_diff": increment},
+                {"source": "reviewer", "status": "completed", "verdict": {"schema_version": "dal.post-fix-verdict/1.0", "result_sha": "5" * 40, "verdict": verdict_value, "acceptance_verified": True, "finding_resolutions": resolutions, "acceptance_gap_resolutions": [], "new_findings": new_findings}},
+            ],
+        )
+    elif test_id == "DAL-T-FIXDIFF-001":
+        path = "src/importer/run.py"
+        translation = "@@ -1,5 +1,5 @@\n line1\n line2\n-old3\n-old4\n+new3\n+new4\n line5"
+        increment = "@@ -2,4 +2,4 @@\n line2\n-new3\n-new4\n+fixed3\n+fixed4\n line5"
+        if variant == "surviving_set_empty":
+            translation = "@@ -1,5 +1,3 @@\n line1\n line2\n-old3\n-old4\n line5"
+        elif variant == "increment_missed_surviving_lines":
+            increment = "@@ -1,2 +1,2 @@\n line1\n-other\n+changed"
+        elif variant == "no_deletion_in_increment":
+            increment = "@@ -2,2 +2,3 @@\n line2\n+guard\n new3"
+        anchor_entry = {"mode": "040000", "type": "tree", "present": True} if variant == "anchor_entry_not_blob" else {"mode": "100644", "type": "blob", "present": True}
+        previous_entry = {"mode": "100644", "type": "blob", "present": False} if variant == "path_died_between_rounds" else {"mode": "100644", "type": "blob", "present": True}
+        evidence = "d" * 64 if variant == "evidence_role_violation" else "f" * 64
+        acceptance_verified = variant != "verified_with_unverified_acceptance"
+        gap_ids = ["AC-1"] if variant in {"gap_closed_by_test_receipts", "gap_closed_by_fix_diff_only"} else []
+        gap_evidence = "c" * 64 if variant == "gap_closed_by_test_receipts" else "f" * 64
+        gap_resolutions = [{"acceptance_id": "AC-1", "status": "closed", "summary": "Missing verification delivered", "evidence_sha256": [gap_evidence]}] if gap_ids else []
+        verdict_value = "changes_requested" if variant in {"new_finding_anchor_mismatch", "changes_requested_declared", "changes_requested_new_findings_only"} else "verified"
+        if variant == "new_finding_anchor_mismatch":
+            #: Anchored to a third tree: neither the verdict's result_sha
+            #: (§6 L620) nor any round anchor — illegal in both directions.
+            new_findings = [{"finding_id": "F-901", "severity": "P2", "location": {"path": path, "line_start": 2, "line_end": 2, "anchor_sha": "9" * 40}, "summary": "Anchor not bound to this verdict", "failure_scenario": "Regression measured on another tree", "category": "correctness"}]
+        elif variant == "changes_requested_new_findings_only":
+            #: Refreeze §2c D2/D3 legal-path variant: the regression anchors
+            #: to this verdict's result_sha (§6 L620).
+            new_findings = [{"finding_id": "F-901", "severity": "P2", "location": {"path": path, "line_start": 2, "line_end": 2, "anchor_sha": "5" * 40}, "summary": "Regression measured in this verdict's result tree", "failure_scenario": "Replay duplicates rows again", "category": "correctness"}]
+        else:
+            new_findings = []
+        if variant == "changes_requested_declared":
+            finding_resolutions = [{"finding_id": "F-1", "status": "remaining", "summary": "Fix attempt rejected", "evidence_sha256": ["a" * 64]}]
+        else:
+            #: ``changes_requested_new_findings_only`` (refreeze §2c D2/D3
+            #: legal-path variant) shares this closed resolution: every
+            #: original finding resolved closed but the new regression forces
+            #: changes_requested — anchored to this verdict's result_sha
+            #: (§6 L620) and reaching fixing without any remaining resolution.
+            #: The pre-refreeze rule blocked this shape twice over (anchor
+            #: direction; no remaining).
+            finding_resolutions = [{"finding_id": "F-1", "status": "closed", "summary": "Idempotency key added", "evidence_sha256": [evidence]}]
+        verdict = {"schema_version": "dal.post-fix-verdict/1.0", "result_sha": "5" * 40, "verdict": verdict_value, "acceptance_verified": acceptance_verified, "finding_resolutions": finding_resolutions, "acceptance_gap_resolutions": gap_resolutions, "new_findings": new_findings}
+        actions, facts, results = (
+            [{"command": "validate_post_fix_verdict"}, {"command": "record_review"}],
+            {
+                "manifest_roles": {"f" * 64: "fix_diff", "c" * 64: "test_receipts", "d" * 64: "approved_plan", "a" * 64: "review_findings"},
+                "test_receipts": {"c" * 64: {"verification_id": "VR-1"}},
+                "plan_tasks": [{"task_id": "T-1", "allowed_paths": [{"path": "src/importer", "path_type": "directory"}], "acceptance_ids": ["AC-1"]}],
+                "plan_verification_ids": {"AC-1": ["VR-1"]},
+                "original_review": {"finding_ids": ["F-1"], "finding_locations": {"F-1": {"path": path, "line_start": 3, "line_end": 4, "anchor_sha": "3" * 40}}, "acceptance_gap_ids": gap_ids},
+                "prior_verdict_chain": [{"sequence": 1, "result_sha": "4" * 40, "finding_resolutions": [{"finding_id": "F-1", "status": "remaining", "summary": "Not yet fixed", "evidence_sha256": ["a" * 64]}], "new_findings": []}],
+                "round_anchors": {"anchor_sha": "3" * 40, "previous_result_sha": "4" * 40},
+            },
+            [
+                {"source": "git_executor", "status": "completed", "path": path, "anchor_tree_entry": anchor_entry, "previous_tree_entry": previous_entry, "current_tree_entry": {"mode": "100644", "type": "blob", "present": True}, "anchor_translation_diff": translation, "increment_diff": increment},
+                {"source": "reviewer", "status": "completed", "verdict": verdict},
+            ],
+        )
     else:
         raise ValueError(f"missing semantic operation input: {test_id}/{variant}/{gate}")
 
@@ -2472,6 +2736,17 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
     many("DAL-T-REVIEW-INDEP-001", ["same_session", "same_context", "same_independence_key"], "G3", ["DAL-023", "DAL-024", "DAL-030"], "reviewing", "reviewing", None, None, "POLICY_DENIED", None, [])
     many("DAL-T-REVIEW-INDEP-001", ["synthetic_fresh"], "G3", ["DAL-023", "DAL-024", "DAL-030"], "reviewing", "verified", None, None, "APPLIED", None, ["review.completed"])
     many("DAL-T-REVIEW-INDEP-001", ["live_fresh"], "G4", ["DAL-023", "DAL-024", "DAL-030"], "reviewing", "verified", None, None, "APPLIED", None, ["review.completed"])
+    many("DAL-T-PLAN-XFIELD-001", ["identity_mismatch", "paths_overlap_file_in_dir", "paths_overlap_dir_in_dir", "paths_overlap_equal", "order_gap", "dependency_not_earlier", "unknown_verification", "digest_drift"], "G3", ["DAL-022"], "planning", "needs_human", "feature", "PROVIDER_CONTRACT_FAILURE", "APPLIED", None, ["feature.blocked"])
+    many("DAL-T-PLAN-XFIELD-001", ["plan_complete"], "G3", ["DAL-022"], "planning", "awaiting_plan_review", None, None, "APPLIED", None, ["plan.ready"])
+    many("DAL-T-DISPOSITION-001", ["coverage_incomplete", "provider_approve_with_findings", "provider_request_changes_clean"], "G3", ["DAL-023", "DAL-024", "DAL-030"], "reviewing", "needs_human", "feature", "PROVIDER_CONTRACT_FAILURE", "APPLIED", None, ["feature.blocked"])
+    many("DAL-T-DISPOSITION-001", ["approve_clean"], "G3", ["DAL-023", "DAL-024", "DAL-030"], "reviewing", "verified", None, None, "APPLIED", None, ["review.completed"])
+    many("DAL-T-DISPOSITION-001", ["request_changes_findings", "request_changes_gaps"], "G3", ["DAL-023", "DAL-024", "DAL-030"], "reviewing", "fixing", None, None, "APPLIED", None, ["fix.requested"])
+    many("DAL-T-OPENSET-001", ["carried_finding_omitted", "carried_finding_renamed", "new_finding_id_reused", "verified_with_new_findings", "original_remaining_omitted"], "G3", ["DAL-024", "DAL-030"], "reviewing", "needs_human", "feature", "PROVIDER_CONTRACT_FAILURE", "APPLIED", None, ["feature.blocked"])
+    many("DAL-T-OPENSET-001", ["init_from_review", "carry_forward_exact"], "G3", ["DAL-024", "DAL-030"], "reviewing", "verified", None, None, "APPLIED", None, ["review.completed"])
+    many("DAL-T-OPENSET-001", ["remaining_declared", "prior_closed_carried_not_touched"], "G3", ["DAL-024", "DAL-030"], "reviewing", "fixing", None, None, "APPLIED", None, ["fix.requested"])
+    many("DAL-T-FIXDIFF-001", ["evidence_role_violation", "anchor_entry_not_blob", "path_died_between_rounds", "surviving_set_empty", "increment_missed_surviving_lines", "no_deletion_in_increment", "gap_closed_by_fix_diff_only", "new_finding_anchor_mismatch", "verified_with_unverified_acceptance"], "G3", ["DAL-022", "DAL-024", "DAL-030"], "reviewing", "needs_human", "feature", "PROVIDER_CONTRACT_FAILURE", "APPLIED", None, ["feature.blocked"])
+    many("DAL-T-FIXDIFF-001", ["verified_clean", "gap_closed_by_test_receipts"], "G3", ["DAL-022", "DAL-024", "DAL-030"], "reviewing", "verified", None, None, "APPLIED", None, ["review.completed"])
+    many("DAL-T-FIXDIFF-001", ["changes_requested_declared", "changes_requested_new_findings_only"], "G3", ["DAL-022", "DAL-024", "DAL-030"], "reviewing", "fixing", None, None, "APPLIED", None, ["fix.requested"])
     pronly = {
         "text_request": ("awaiting_merge", "POLICY_DENIED", None, []),
         "approve_record": ("awaiting_merge", "APPLIED", None, ["approval.recorded"]),
@@ -2800,15 +3075,35 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
     for gate in ("G2", "G4"):
         many("DAL-T-CRED-001", [f"{v}--{gate.lower()}" for v in ["env", "fd", "keychain", "proxy", "parent_process", "log"]], gate, ["DAL-017", "DAL-025"], "coding", "needs_human", "feature", "POLICY_FAILURE", "APPLIED", None, ["feature.blocked"])
     many("DAL-T-CARD-001", ["resolved", "expired", "superseded", "stale", "apns_loss", "old_click"], "G1", ["DAL-013"], "awaiting_plan_review", "awaiting_plan_review", None, None, "DECISION_STALE", None, [])
-    many("DAL-T-DOCK-001", ["mixed_rank", "tie", "dependency", "same_root"], "G1", ["DAL-013"], "needs_human", "needs_human", None, None, "APPLIED", None, ["decision.created"], allowed_writes=["decision_projection", "operation_receipt", "audit"], receipt_schema_override="dal.operation-receipt/1.0")
-    add("DAL-T-DOCK-001", "bulk_high_risk", "G1", ["DAL-013"], "needs_human", "needs_human", None, None, "POLICY_DENIED", None, [])
+    def dock_assertions(ordered, ranks, evictions):
+        return [
+            {"field": "ordered_decision_ids", "operator": "equals", "value": ordered},
+            {"field": "ranks", "operator": "equals", "value": ranks},
+            {"field": "evictions", "operator": "equals", "value": evictions},
+        ]
+
+    for dock_variant, dock_ordered, dock_ranks, dock_evictions in [
+        ("mixed_rank", ["d1", "d2"], {"d1": 1, "d2": 4}, {}),
+        ("tie", ["d1", "d2"], {"d1": 1, "d2": 1}, {}),
+        ("dependency", ["d2"], {"d2": 4}, {"d1": "dependency"}),
+        ("same_root", ["d1"], {"d1": 1}, {"d2": "same_root"}),
+        ("bulk_high_risk", ["d1", "d2", "d3", "d4", "d5"],
+         {"d1": 0, "d2": 0, "d3": 0, "d4": 0, "d5": 0}, {"d6": "maximum_items"}),
+    ]:
+        add(
+            "DAL-T-DOCK-001", dock_variant, "G1", ["DAL-013"], "needs_human",
+            "needs_human", None, None, "APPLIED", None, ["decision.created"],
+            allowed_writes=["decision_projection", "operation_receipt", "audit"],
+            receipt_schema_override="dal.operation-receipt/1.0",
+            scenario_assertions=dock_assertions(dock_ordered, dock_ranks, dock_evictions),
+        )
     many("DAL-T-BATCH-001", ["continuous", "service_restart", "fifth_item", "high_risk_interrupt"], "G1", ["DAL-013"], "needs_human", "needs_human", None, None, "APPLIED", None, ["notification.batch_flushed"], allowed_writes=["notification_batch", "notification_outbox", "operation_receipt", "audit"], receipt_schema_override="dal.operation-receipt/1.0")
     add(
         "DAL-T-BATCH-001", "all_invalid", "G1", ["DAL-013"], "needs_human", "needs_human",
         None, None, "NOOP", None, [], allowed_writes=[], receipt_schema_override="dal.operation-receipt/1.0",
         scenario_assertions=[{"field": "notification_outbox_create_count", "operator": "equals", "value": 0}, {"field": "batch_window_state", "operator": "equals", "value": "cancelled"}],
     )
-    many("DAL-T-NOTIFY-001", ["ack_loss", "concurrent_claim", "restart"], "G1", ["DAL-013"], "needs_human", "needs_human", None, None, "APPLIED", None, ["notification.delivery_claimed", "notification.delivery_started", "notification.delivery_succeeded"], allowed_writes=["notification_delivery", "notification_outbox", "operation_receipt", "audit"], receipt_schema_override="dal.operation-receipt/1.0")
+    many("DAL-T-NOTIFY-001", ["ack_loss", "concurrent_claim", "restart"], "G1", ["DAL-013"], "needs_human", "needs_human", None, None, "APPLIED", None, ["notification.delivery_created", "notification.delivery_claimed", "notification.delivery_started", "notification.delivery_succeeded"], allowed_writes=["notification_delivery", "notification_outbox", "operation_receipt", "audit"], receipt_schema_override="dal.operation-receipt/1.0")
     permanent_events = ["notification.delivery_created"]
     for attempt in range(1, 6):
         permanent_events.extend(["notification.delivery_claimed", "notification.delivery_started", "notification.delivery_failed"])
@@ -2958,13 +3253,13 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
     fixture_sequences = [fixture for fixture in fixtures.values() if "operation_sequence" in fixture]
     operation_fixture_sequences = [fixture for fixture in fixture_sequences if fixture.get("resolver_sequence_kind") == "operation_commands"]
     transition_fixture_sequences = [fixture for fixture in fixture_sequences if fixture.get("resolver_sequence_kind") == "transition_commands"]
-    if (len(common_specs), len(sequence_specs), len(common_commands), len(sequence_commands), operation_variant_count) != (36, 2, 190, 17, 204):
+    if (len(common_specs), len(sequence_specs), len(common_commands), len(sequence_commands), operation_variant_count) != (40, 2, 227, 17, 241):
         raise ValueError("semantic operation coverage drift")
     if (
         len(fixture_sequences), sum(len(fixture["operation_sequence"]) for fixture in fixture_sequences),
         len(operation_fixture_sequences), sum(len(fixture["operation_sequence"]) for fixture in operation_fixture_sequences),
         len(transition_fixture_sequences), sum(len(fixture["operation_sequence"]) for fixture in transition_fixture_sequences),
-    ) != (205, 209, 204, 207, 1, 2):
+    ) != (242, 246, 241, 244, 1, 2):
         raise ValueError("fixture operation/transition sequence accounting drift")
     forbidden_resolver_keys = {"test_id", "variant_id", "case_id", "injection_point", "injection_occurrence", "expected_result", "expected_receipt_code"}
 
@@ -3047,12 +3342,12 @@ def build_test_contracts(specs: list[dict], registry_hash: str, evidence_hash: s
             "forbidden_resolver_fields": ["test_id", "variant_id", "case_id", "injection_point", "injection_occurrence", "expected_result", "expected_receipt_code"],
             "allowed_expected_comparison_fields": ["expected_head_sha", "expected_provider_attempt_version", "expected_version"],
             "sequence_accounting": {
-                "fixture_operation_sequence_variants": 205,
-                "fixture_raw_command_objects": 209,
-                "operation_registry_variants": 204,
-                "operation_registry_command_objects": 207,
-                "common_input_specs": 36,
-                "common_input_commands": 190,
+                "fixture_operation_sequence_variants": 239,
+                "fixture_raw_command_objects": 243,
+                "operation_registry_variants": 238,
+                "operation_registry_command_objects": 241,
+                "common_input_specs": 40,
+                "common_input_commands": 224,
                 "multi_command_operation_specs": 2,
                 "multi_command_operation_commands": 17,
                 "transition_sequence_variants_excluded_from_operation_registry": 1,
@@ -3164,11 +3459,639 @@ def build_eval_schema() -> None:
     (OUT / "eval-run-manifest_schema_v1.0.json").write_text(json.dumps(schema, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
+def build_wave3_schemas() -> None:
+    """Emit the Wave 3 (DAL-021..024) closed Draft 2020-12 JSON Schemas.
+
+    These encode the field sets frozen in ``DAL021-024_合同冻结包_v0.1.md`` §3-§6.
+    They are documentation artifacts only; the semantic cross-field checks that
+    require Git executor / controller recomputation are recorded in ``$comment``
+    and remain controller operations, never JSON Schema assertions.
+    """
+    DRAFT = "https://json-schema.org/draft/2020-12/schema"
+    NONEMPTY = {"type": "string", "minLength": 1}
+    # §4「去除首尾空白后仍非空」: 至少含一个非空白字符 (pattern 非锚定 = 存在性断言)。
+    TRIMMED_NONEMPTY = {"type": "string", "minLength": 1, "pattern": "\\S"}
+    # §4/§5「规范化 repo-relative POSIX path」: 非空、非绝对路径、无 `.`/`..` segment、无 `.git` 子树。
+    # 与 §4 原文逐字对齐——只有 segment 恰为 `.`、`..` 或 `.git` 才拒；`.gitignore` / `.github` /
+    # `foo..bar` 等合法 dotfile/filename 放行。包含关系(realpath) 与 regular-file(mode) 属 controller
+    # 层(b)，不在此 pattern。负向前瞻在 Draft 2020-12 / Python re 均受支持。
+    POSIX_REL_PATH = {
+        "type": "string",
+        "minLength": 1,
+        "pattern": r"^(?!\/)(?!^\.\.?($|\/))(?!.*\/\.\.?($|\/))(?!^\.git($|\/))(?!.*\/\.git($|\/))",
+    }
+    SHA256 = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    GIT_SHA = {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+    NULL_OR_SHA256 = {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+    NULL_OR_GIT_SHA = {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"}
+    NULL_OR_NONEMPTY = {"type": ["string", "null"], "minLength": 1}
+    NULL_OR_INTEGER = {"type": ["integer", "null"]}
+    DATE_TIME = {"type": "string", "format": "date-time"}
+    OPERATION_KIND = {"enum": ["planning", "independent_review", "post_fix_verification"]}
+    OUTPUT_SCHEMA_VALUES = ["dal.plan-artifact/1.0", "dal.review-findings/1.0", "dal.post-fix-verdict/1.0"]
+    OUTPUT_SCHEMA_ENUM = {"enum": OUTPUT_SCHEMA_VALUES}
+    OUTPUT_SCHEMA_NULLABLE = {"type": ["string", "null"], "enum": OUTPUT_SCHEMA_VALUES + [None]}
+    CODECX_FAILURE_CLASS_VALUES = ["usage_limit", "transient", "auth", "contract_failure", "policy_failure", "budget_limit"]
+    NULLABLE_FAILURE_CLASS = {"type": ["string", "null"], "enum": CODECX_FAILURE_CLASS_VALUES + [None]}
+    PASS_FAIL = {"enum": ["passed", "failed"]}
+
+    def write(name: str, schema: dict) -> None:
+        (OUT / f"{name}_schema_v1.0.json").write_text(
+            json.dumps(schema, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    usage = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["provider_reported", "input_tokens", "cached_input_tokens", "output_tokens", "total_tokens"],
+        "properties": {
+            "provider_reported": {"type": "boolean"},
+            "input_tokens": {"type": ["integer", "null"], "minimum": 0},
+            "cached_input_tokens": {"type": ["integer", "null"], "minimum": 0},
+            "output_tokens": {"type": ["integer", "null"], "minimum": 0},
+            "total_tokens": {"type": ["integer", "null"], "minimum": 0},
+        },
+    }
+
+    def finding_location() -> dict:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["path", "line_start", "line_end", "anchor_sha"],
+            "properties": {
+                "path": POSIX_REL_PATH,
+                "line_start": {"type": "integer", "minimum": 1},
+                "line_end": {"type": "integer", "minimum": 1},
+                "anchor_sha": GIT_SHA,
+            },
+        }
+
+    def finding_object() -> dict:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["finding_id", "severity", "location", "summary", "failure_scenario", "category"],
+            "properties": {
+                "finding_id": NONEMPTY,
+                "severity": {"enum": ["P0", "P1", "P2", "P3"]},
+                "location": finding_location(),
+                "summary": NONEMPTY,
+                "failure_scenario": NONEMPTY,
+                "category": {"enum": ["correctness", "security", "data_integrity", "concurrency", "recovery", "contract", "test_coverage", "documentation"]},
+            },
+        }
+
+    # --- §3.1 dal.codex-adapter-request/1.0 ---
+    allowed_path_item = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["path", "access"],
+        "properties": {"path": NONEMPTY, "access": {"const": "read"}},
+    }
+    context_binding = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["source_type", "agent_identity", "context_sha256", "config_sha256", "prompt_template_sha256", "open_findings_sha256"],
+        "properties": {
+            "source_type": {"enum": ["planning-controller", "review-controller"]},
+            "agent_identity": NONEMPTY,
+            "context_sha256": SHA256,
+            "config_sha256": SHA256,
+            "prompt_template_sha256": SHA256,
+            "open_findings_sha256": NULL_OR_SHA256,
+        },
+    }
+    redaction_policy = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["canonicalizer", "rules_version"],
+        "properties": {"canonicalizer": {"const": "rfc8785-jcs/1.0"}, "rules_version": NONEMPTY},
+    }
+    codex_config = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["endpoint", "proxy", "sandbox_profile", "mcp_plugins", "feature_flags", "extra_read_roots", "extra_write_roots", "project_provider_override"],
+        "properties": {
+            "endpoint": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["scheme", "host", "path"],
+                "properties": {"scheme": NONEMPTY, "host": NONEMPTY, "path": NONEMPTY},
+            },
+            "proxy": {"type": "null"},
+            "sandbox_profile": NONEMPTY,
+            "mcp_plugins": {"type": "array", "maxItems": 0},
+            "feature_flags": {"type": "array", "uniqueItems": True, "items": NONEMPTY},
+            "extra_read_roots": {"type": "array", "maxItems": 0},
+            "extra_write_roots": {"type": "array", "maxItems": 0},
+            "project_provider_override": {"oneOf": [{"type": "null"}, NONEMPTY]},
+        },
+    }
+    codex_endpoint_policy = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["scheme", "host", "path", "policy_version"],
+        "properties": {"scheme": NONEMPTY, "host": NONEMPTY, "path": NONEMPTY, "policy_version": NONEMPTY},
+    }
+    request_schema = {
+        "$schema": DRAFT,
+        "$id": "dal.codex-adapter-request/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "schema_version", "task_id", "feature_id", "run_id", "operation_kind", "model",
+            "harness", "harness_version", "binary_sha256", "endpoint_policy_sha256", "output_schema",
+            "cwd", "base_sha", "input_manifest_ref", "input_manifest_sha256", "allowed_paths",
+            "context_binding", "timeout_wall_seconds", "max_turns", "max_tool_calls", "redaction_policy",
+        ],
+        "properties": {
+            "schema_version": {"const": "dal.codex-adapter-request/1.0"},
+            "task_id": NONEMPTY,
+            "feature_id": NONEMPTY,
+            "run_id": NONEMPTY,
+            "operation_kind": OPERATION_KIND,
+            "model": NONEMPTY,
+            "harness": NONEMPTY,
+            "harness_version": NONEMPTY,
+            "binary_sha256": SHA256,
+            "endpoint_policy_sha256": SHA256,
+            "output_schema": OUTPUT_SCHEMA_ENUM,
+            "cwd": NONEMPTY,
+            "base_sha": GIT_SHA,
+            "input_manifest_ref": NONEMPTY,
+            "input_manifest_sha256": SHA256,
+            "allowed_paths": {"type": "array", "uniqueItems": True, "items": allowed_path_item},
+            "context_binding": context_binding,
+            "timeout_wall_seconds": {"type": "integer", "minimum": 1},
+            "max_turns": {"const": 1},
+            "max_tool_calls": {"const": 0},
+            "redaction_policy": redaction_policy,
+        },
+        "allOf": [
+            {
+                "oneOf": [
+                    {"properties": {"operation_kind": {"const": "planning"}, "output_schema": {"const": "dal.plan-artifact/1.0"}}, "required": ["operation_kind", "output_schema"]},
+                    {"properties": {"operation_kind": {"const": "independent_review"}, "output_schema": {"const": "dal.review-findings/1.0"}}, "required": ["operation_kind", "output_schema"]},
+                    {"properties": {"operation_kind": {"const": "post_fix_verification"}, "output_schema": {"const": "dal.post-fix-verdict/1.0"}}, "required": ["operation_kind", "output_schema"]},
+                ]
+            },
+            {
+                "oneOf": [
+                    {"properties": {"operation_kind": {"const": "planning"}, "context_binding": {"properties": {"source_type": {"const": "planning-controller"}}, "required": ["source_type"]}}, "required": ["operation_kind", "context_binding"]},
+                    {"properties": {"operation_kind": {"enum": ["independent_review", "post_fix_verification"]}, "context_binding": {"properties": {"source_type": {"const": "review-controller"}}, "required": ["source_type"]}}, "required": ["operation_kind", "context_binding"]},
+                ]
+            },
+            {
+                "if": {"properties": {"operation_kind": {"const": "post_fix_verification"}}, "required": ["operation_kind"]},
+                "then": {"properties": {"context_binding": {"properties": {"open_findings_sha256": SHA256}, "required": ["open_findings_sha256"]}}},
+                "else": {"properties": {"context_binding": {"properties": {"open_findings_sha256": {"type": "null"}}, "required": ["open_findings_sha256"]}}},
+            },
+        ],
+        "$defs": {"codex_config": codex_config, "codex_endpoint_policy": codex_endpoint_policy},
+        "$comment": "config_sha256 / endpoint_policy_sha256 are RFC8785-JCS digests of $defs.codex_config / $defs.codex_endpoint_policy respectively, computed by the controller from launch params + read-back, never provider-asserted. allowed_paths sorted by UTF-8 byte order and access fixed to read are controller checks. config.proxy is locked to null (Wave 3 freezes the adapter subprocess to run with no proxy; the {scheme,host,port} shape documented in §3.1 is drift-detection illustration only, not a schema-valid value).",
+    }
+    write("codex-adapter-request", request_schema)
+
+    # --- §3.1.1 dal.codex-input-manifest/1.0 ---
+    def manifest_item(role: str, media_type: str, artifact_schema_version: str | None) -> dict:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["role", "artifact_schema_version", "media_type", "protected_ref", "sha256", "size_bytes"],
+            "properties": {
+                "role": {"const": role},
+                "artifact_schema_version": {"type": "null"} if artifact_schema_version is None else {"const": artifact_schema_version},
+                "media_type": {"const": media_type},
+                "protected_ref": NONEMPTY,
+                "sha256": SHA256,
+                "size_bytes": {"type": "integer", "minimum": 0},
+            },
+        }
+
+    generic_manifest_item = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["role", "artifact_schema_version", "media_type", "protected_ref", "sha256", "size_bytes"],
+        "properties": {
+            "role": NONEMPTY,
+            "artifact_schema_version": NULL_OR_NONEMPTY,
+            "media_type": NONEMPTY,
+            "protected_ref": NONEMPTY,
+            "sha256": SHA256,
+            "size_bytes": {"type": "integer", "minimum": 0},
+        },
+    }
+    ROLE_ORDER = {
+        "planning": [
+            ("requirement_artifact", "text/markdown", None),
+            ("repo_rules", "text/markdown", None),
+        ],
+        "independent_review": [
+            ("approved_plan", "application/json", "dal.plan-artifact/1.0"),
+            ("candidate_diff", "text/x-diff", None),
+            ("test_receipts", "application/json", "dal.evidence.test-receipt/1.0"),
+            ("repo_rules", "text/markdown", None),
+        ],
+        "post_fix_verification": [
+            ("approved_plan", "application/json", "dal.plan-artifact/1.0"),
+            ("review_findings", "application/json", "dal.review-findings/1.0"),
+            ("fix_diff", "text/x-diff", None),
+            ("test_receipts", "application/json", "dal.evidence.test-receipt/1.0"),
+            ("repo_rules", "text/markdown", None),
+        ],
+    }
+    manifest_schema = {
+        "$schema": DRAFT,
+        "$id": "dal.codex-input-manifest/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["schema_version", "operation_kind", "task_id", "feature_id", "run_id", "base_sha", "result_sha", "items"],
+        "properties": {
+            "schema_version": {"const": "dal.codex-input-manifest/1.0"},
+            "operation_kind": OPERATION_KIND,
+            "task_id": NONEMPTY,
+            "feature_id": NONEMPTY,
+            "run_id": NONEMPTY,
+            "base_sha": GIT_SHA,
+            "result_sha": NULL_OR_GIT_SHA,
+            "items": {"type": "array", "items": generic_manifest_item},
+        },
+        "allOf": [
+            {
+                "if": {"properties": {"operation_kind": {"const": op}}, "required": ["operation_kind"]},
+                "then": {
+                    "properties": {
+                        "items": {
+                            "minItems": len(order),
+                            "maxItems": len(order),
+                            "prefixItems": [manifest_item(role, media_type, art) for (role, media_type, art) in order],
+                            "items": False,
+                        }
+                    }
+                },
+            }
+            for op, order in ROLE_ORDER.items()
+        ]
+        + [
+            {
+                "if": {"properties": {"operation_kind": {"const": "planning"}}, "required": ["operation_kind"]},
+                "then": {"properties": {"result_sha": {"type": "null"}}},
+                "else": {"properties": {"result_sha": GIT_SHA}},
+            }
+        ],
+        "$comment": "The fixed role order/count per operation_kind and per-role media_type/artifact_schema_version are enforced via prefixItems. manifest<->request identity cross-binding (task_id/feature_id/run_id/base_sha/operation_kind byte-match the referencing request) and item size/hash read-back are controller checks.",
+    }
+    write("codex-input-manifest", manifest_schema)
+
+    # --- §3.2 dal.codex-adapter-response/1.0 ---
+    def status_pair_branch(class_: str, reason: str) -> dict:
+        return {
+            "properties": {"failure_class": {"const": class_}, "reason_code": {"const": reason}},
+            "required": ["failure_class", "reason_code"],
+        }
+
+    response_allof = [
+        {
+            "if": {
+                "anyOf": [
+                    {"properties": {"redaction_scan": {"const": "failed"}}, "required": ["redaction_scan"]},
+                    {"properties": {"endpoint_policy": {"const": "failed"}}, "required": ["endpoint_policy"]},
+                ]
+            },
+            "then": {
+                "properties": {
+                    "result_status": {"const": "failed"},
+                    "failure_class": {"const": "policy_failure"},
+                    "reason_code": {"const": "POLICY_FAILURE"},
+                    "quarantined": {"const": True},
+                    "validated_output_schema": {"type": "null"},
+                    "final_payload_ref": {"type": "null"},
+                    "final_payload_sha256": {"type": "null"},
+                }
+            },
+            "else": {"properties": {"quarantined": {"const": False}}},
+        },
+        {
+            "if": {"properties": {"result_status": {"const": "succeeded"}}, "required": ["result_status"]},
+            "then": {
+                "properties": {
+                    "validated_output_schema": OUTPUT_SCHEMA_ENUM,
+                    "final_payload_ref": NONEMPTY,
+                    "final_payload_sha256": SHA256,
+                    "failure_class": {"type": "null"},
+                    "reason_code": {"type": "null"},
+                    "exit_code": {"const": 0},
+                    "redaction_scan": {"const": "passed"},
+                    "endpoint_policy": {"const": "passed"},
+                    "quarantined": {"const": False},
+                }
+            },
+        },
+        {
+            "if": {"properties": {"result_status": {"const": "blocked"}}, "required": ["result_status"]},
+            "then": {
+                "properties": {
+                    "validated_output_schema": {"type": "null"},
+                    "final_payload_ref": {"type": "null"},
+                    "final_payload_sha256": {"type": "null"},
+                    "quarantined": {"const": False},
+                },
+                "allOf": [
+                    {"oneOf": [status_pair_branch("usage_limit", "USAGE_LIMIT"), status_pair_branch("auth", "AUTH_REQUIRED"), status_pair_branch("budget_limit", "BUDGET_LIMIT")]}
+                ],
+            },
+        },
+        {
+            "if": {"properties": {"result_status": {"const": "failed"}}, "required": ["result_status"]},
+            "then": {
+                "properties": {
+                    "validated_output_schema": {"type": "null"},
+                    "final_payload_ref": {"type": "null"},
+                    "final_payload_sha256": {"type": "null"},
+                },
+                "allOf": [
+                    {"oneOf": [status_pair_branch("transient", "TRANSIENT_RETRY_EXHAUSTED"), status_pair_branch("contract_failure", "PROVIDER_CONTRACT_FAILURE"), status_pair_branch("policy_failure", "POLICY_FAILURE")]}
+                ],
+            },
+        },
+        {
+            "if": {"properties": {"result_status": {"const": "cancelled"}}, "required": ["result_status"]},
+            "then": {
+                "properties": {
+                    "validated_output_schema": {"type": "null"},
+                    "final_payload_ref": {"type": "null"},
+                    "final_payload_sha256": {"type": "null"},
+                    "failure_class": {"type": "null"},
+                    "reason_code": {"type": "null"},
+                }
+            },
+        },
+    ]
+    response_schema = {
+        "$schema": DRAFT,
+        "$id": "dal.codex-adapter-response/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "schema_version", "task_id", "model", "harness", "harness_version", "binary_sha256",
+            "endpoint_policy_sha256", "result_status", "requested_output_schema", "validated_output_schema",
+            "input_manifest_sha256", "context_binding_sha256", "final_payload_ref", "final_payload_sha256",
+            "exit_code", "started_at", "ended_at", "usage", "failure_class", "reason_code",
+            "raw_evidence_ref", "raw_evidence_sha256", "redaction_scan", "endpoint_policy", "quarantined",
+        ],
+        "properties": {
+            "schema_version": {"const": "dal.codex-adapter-response/1.0"},
+            "task_id": NONEMPTY,
+            "model": NONEMPTY,
+            "harness": NONEMPTY,
+            "harness_version": NONEMPTY,
+            "binary_sha256": SHA256,
+            "endpoint_policy_sha256": SHA256,
+            "result_status": {"enum": ["succeeded", "blocked", "failed", "cancelled"]},
+            "requested_output_schema": OUTPUT_SCHEMA_ENUM,
+            "validated_output_schema": OUTPUT_SCHEMA_NULLABLE,
+            "input_manifest_sha256": SHA256,
+            "context_binding_sha256": SHA256,
+            "final_payload_ref": NULL_OR_NONEMPTY,
+            "final_payload_sha256": NULL_OR_SHA256,
+            "exit_code": NULL_OR_INTEGER,
+            "started_at": DATE_TIME,
+            "ended_at": DATE_TIME,
+            "usage": usage,
+            "failure_class": NULLABLE_FAILURE_CLASS,
+            "reason_code": NULL_OR_NONEMPTY,
+            "raw_evidence_ref": NONEMPTY,
+            "raw_evidence_sha256": SHA256,
+            "redaction_scan": PASS_FAIL,
+            "endpoint_policy": PASS_FAIL,
+            "quarantined": {"type": "boolean"},
+        },
+        "allOf": response_allof,
+        "$comment": "task_id/model/harness/harness_version/binary_sha256/endpoint_policy_sha256/input_manifest_sha256/context_binding_sha256/requested_output_schema must byte-match the protected request (adapter/controller filled, never provider-copied). 'transient must have consumed 2 retries' and 'ended_at >= started_at' are controller checks. base_sha is not a response field. task_failure from the provider is reclassified to contract_failure and is therefore absent from failure_class.",
+    }
+    write("codex-adapter-response", response_schema)
+
+    # --- §3.3 dal.codex-redacted-log/1.0 ---
+    redacted_log_schema = {
+        "$schema": DRAFT,
+        "$id": "dal.codex-redacted-log/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["schema_version", "task_id", "run_id", "started_at", "ended_at", "exit_code", "usage", "failure_class", "redaction_scan", "endpoint_policy"],
+        "properties": {
+            "schema_version": {"const": "dal.codex-redacted-log/1.0"},
+            "task_id": NONEMPTY,
+            "run_id": NONEMPTY,
+            "started_at": DATE_TIME,
+            "ended_at": DATE_TIME,
+            "exit_code": NULL_OR_INTEGER,
+            "usage": usage,
+            "failure_class": NULLABLE_FAILURE_CLASS,
+            "redaction_scan": PASS_FAIL,
+            "endpoint_policy": PASS_FAIL,
+        },
+        "$comment": "MUST NOT contain prompt, raw output, or any credential. A canary on any channel triggers quarantine (DAL004 §6 #4); that is a content check, not a schema assertion.",
+    }
+    write("codex-redacted-log", redacted_log_schema)
+
+    # --- §4 dal.plan-artifact/1.0 (business content closure) ---
+    prd = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["scope", "non_goals", "risks"],
+        "properties": {
+            "scope": {"type": "array", "minItems": 1, "items": TRIMMED_NONEMPTY},
+            "non_goals": {"type": "array", "items": TRIMMED_NONEMPTY},
+            "risks": {"type": "array", "items": TRIMMED_NONEMPTY},
+        },
+    }
+    technical_design = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["change_points", "boundaries", "rollback_steps"],
+        "properties": {
+            "change_points": {"type": "array", "minItems": 1, "items": TRIMMED_NONEMPTY},
+            "boundaries": {"type": "array", "minItems": 1, "items": TRIMMED_NONEMPTY},
+            "rollback_steps": {"type": "array", "minItems": 1, "items": TRIMMED_NONEMPTY},
+        },
+    }
+    plan_allowed_path = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["path", "path_type"],
+        "properties": {"path": POSIX_REL_PATH, "path_type": {"enum": ["file", "directory"]}},
+    }
+    plan_task = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["task_id", "order", "title", "allowed_paths", "acceptance_ids", "dependency_task_ids"],
+        "properties": {
+            "task_id": NONEMPTY,
+            "order": {"type": "integer", "minimum": 1},
+            "title": TRIMMED_NONEMPTY,
+            "allowed_paths": {"type": "array", "items": plan_allowed_path},
+            "acceptance_ids": {"type": "array", "minItems": 1, "items": NONEMPTY},
+            "dependency_task_ids": {"type": "array", "items": NONEMPTY},
+        },
+    }
+    # §4「order 必须从 1 开始」的 schema 可表达前半段: 首个 task 的 order==1 由 prefixItems[0] 锁定;
+    # 「连续递增」(无 gap) 是跨元素序列属性, 由 controller 判定 (见 $comment)。
+    plan_task_first = {
+        **plan_task,
+        "properties": {**plan_task["properties"], "order": {"type": "integer", "const": 1}},
+    }
+    plan_acceptance = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["acceptance_id", "description", "verification_ids"],
+        "properties": {
+            "acceptance_id": NONEMPTY,
+            "description": TRIMMED_NONEMPTY,
+            "verification_ids": {"type": "array", "minItems": 1, "items": NONEMPTY},
+        },
+    }
+    plan_artifact_schema = {
+        "$schema": DRAFT,
+        "$id": "dal.plan-artifact/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["schema_version", "feature_id", "base_sha", "prd", "technical_design", "tasks", "acceptance_criteria"],
+        "properties": {
+            "schema_version": {"const": "dal.plan-artifact/1.0"},
+            "feature_id": NONEMPTY,
+            "base_sha": GIT_SHA,
+            "prd": prd,
+            "technical_design": technical_design,
+            "tasks": {"type": "array", "minItems": 1, "prefixItems": [plan_task_first], "items": plan_task},
+            "acceptance_criteria": {"type": "array", "minItems": 1, "items": plan_acceptance},
+        },
+        "$comment": "feature_id/base_sha must byte-match the input manifest. task_id/acceptance_id uniqueness, order continuity (no gaps; the first task's order==1 is schema-locked via prefixItems), non-overlapping allowed_paths across tasks, dependency referencing earlier tasks without cycles, acceptance reference existence, and verification_ids resolving into the repo-rules command registry are controller checks. allowed_paths_sha256 / acceptance_sha256 digests are computed by the artifact binding, not stored here.",
+    }
+    write("plan-artifact", plan_artifact_schema)
+
+    # --- §5 dal.review-findings/1.0 ---
+    acceptance_gap = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["acceptance_id", "summary", "failure_scenario"],
+        "properties": {"acceptance_id": NONEMPTY, "summary": NONEMPTY, "failure_scenario": NONEMPTY},
+    }
+    coverage_item = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["acceptance_id", "verification_ids"],
+        "properties": {"acceptance_id": NONEMPTY, "verification_ids": {"type": "array", "minItems": 1, "items": NONEMPTY}},
+    }
+    review_findings_schema = {
+        "$schema": DRAFT,
+        "$id": "dal.review-findings/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["schema_version", "review_id", "reviewed_input_manifest_sha256", "reviewed_diff_sha256", "base_sha", "result_sha", "findings", "acceptance_gaps", "coverage", "disposition"],
+        "properties": {
+            "schema_version": {"const": "dal.review-findings/1.0"},
+            "review_id": NONEMPTY,
+            "reviewed_input_manifest_sha256": SHA256,
+            "reviewed_diff_sha256": SHA256,
+            "base_sha": GIT_SHA,
+            "result_sha": GIT_SHA,
+            "findings": {"type": "array", "items": finding_object()},
+            "acceptance_gaps": {"type": "array", "items": acceptance_gap},
+            "coverage": {"type": "array", "items": coverage_item},
+            "disposition": {"enum": ["approve", "request_changes"]},
+        },
+        "allOf": [
+            {
+                "if": {"anyOf": [{"properties": {"findings": {"minItems": 1}}}, {"properties": {"acceptance_gaps": {"minItems": 1}}}]},
+                "then": {"properties": {"disposition": {"const": "request_changes"}}},
+            }
+        ],
+        "$comment": "finding.location.path must resolve to a regular file blob (mode 100644/100755, not tree/submodule 160000/symlink) in the result_sha tree, line_end >= line_start, and location.anchor_sha must equal result_sha; coverage must biject with the approved plan's acceptance_criteria, and disposition=approve requires empty findings/acceptance_gaps plus complete coverage. These are controller checks over Git/plan facts.",
+    }
+    write("review-findings", review_findings_schema)
+
+    # --- §5.1 dal.reviewer-session-binding/1.0 ---
+    session_binding_schema = {
+        "$schema": DRAFT,
+        "$id": "dal.reviewer-session-binding/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["schema_version", "session_id", "independence_key", "binding_key_id", "context_binding_sha256"],
+        "properties": {
+            "schema_version": {"const": "dal.reviewer-session-binding/1.0"},
+            "session_id": NONEMPTY,
+            "independence_key": SHA256,
+            "binding_key_id": NONEMPTY,
+            "context_binding_sha256": SHA256,
+        },
+        "$comment": "Controller-written post-call attestation, not a provider artifact. independence_key = HMAC-SHA256(binding key, jcs({provider, session_id, context_binding_sha256, role})) rendered as 64-char lowercase hex; the key itself is selected by binding_key_id and never enters the payload.",
+    }
+    write("reviewer-session-binding", session_binding_schema)
+
+    # --- §6 dal.post-fix-verdict/1.0 ---
+    def resolution_item(id_field: str) -> dict:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [id_field, "status", "summary", "evidence_sha256"],
+            "properties": {
+                id_field: NONEMPTY,
+                "status": {"enum": ["closed", "remaining"]},
+                "summary": NONEMPTY,
+                "evidence_sha256": {"type": "array", "minItems": 1, "uniqueItems": True, "items": SHA256},
+            },
+        }
+
+    post_fix_verdict_schema = {
+        "$schema": DRAFT,
+        "$id": "dal.post-fix-verdict/1.0",
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "schema_version", "verdict_id", "reviewed_input_manifest_sha256", "original_review_sha256",
+            "fix_diff_sha256", "base_sha", "result_sha", "finding_resolutions", "acceptance_gap_resolutions",
+            "new_findings", "acceptance_verified", "verdict",
+        ],
+        "properties": {
+            "schema_version": {"const": "dal.post-fix-verdict/1.0"},
+            "verdict_id": NONEMPTY,
+            "reviewed_input_manifest_sha256": SHA256,
+            "original_review_sha256": SHA256,
+            "fix_diff_sha256": SHA256,
+            "base_sha": GIT_SHA,
+            "result_sha": GIT_SHA,
+            "finding_resolutions": {"type": "array", "items": resolution_item("finding_id")},
+            "acceptance_gap_resolutions": {"type": "array", "items": resolution_item("acceptance_id")},
+            "new_findings": {"type": "array", "items": finding_object()},
+            "acceptance_verified": {"type": "boolean"},
+            "verdict": {"enum": ["verified", "changes_requested"]},
+        },
+        "allOf": [
+            {"if": {"properties": {"new_findings": {"minItems": 1}}}, "then": {"properties": {"verdict": {"const": "changes_requested"}}}},
+            {
+                "if": {"properties": {"verdict": {"const": "verified"}}, "required": ["verdict"]},
+                "then": {
+                    "properties": {
+                        "new_findings": {"maxItems": 0},
+                        "acceptance_verified": {"const": True},
+                        "finding_resolutions": {"items": {"properties": {"status": {"const": "closed"}}}},
+                        "acceptance_gap_resolutions": {"items": {"properties": {"status": {"const": "closed"}}}},
+                    }
+                },
+            },
+        ],
+        "$comment": "finding_resolutions must biject with the controller-derived open-finding set; new_findings finding_id must be disjoint from all historical IDs and location.anchor_sha must equal result_sha; evidence_sha256 may only reference manifest items with role in {fix_diff, test_receipts, review_findings}; fix_diff localization (path-survival regular-file gate, anchor-line translation to surviving set S, incremental V_{N-1}->V_N '-' line check) and fix_diff incremental binding (V_1.base_sha = R_1.result_sha; V_N.base_sha = V_{N-1}.result_sha) are controller/Git-executor checks, not schema assertions.",
+    }
+    write("post-fix-verdict", post_fix_verdict_schema)
+
+
 def main() -> None:
     specs, registry_hash = build_transition_registry()
     evidence_hash, guard_hash = build_machine_registries(specs)
     build_test_contracts(specs, registry_hash, evidence_hash, guard_hash)
     build_eval_schema()
+    build_wave3_schemas()
     subprocess.run(
         [
             sys.executable,

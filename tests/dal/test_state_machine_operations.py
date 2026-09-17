@@ -20,11 +20,11 @@ dimension the oracle freezes: state trace, receipts (with duplicate flags and
 unique receipt ids), write set, event and external-effect traces, final
 snapshot, scenario assertions and forbidden side effects.
 
-The G1 scenario sets are asserted as *closed enumerations* (B3's remediation):
-a new scenario variant that nobody consumes must fail loudly instead of being
-skipped. The G2 variants of these families — `worker_*` and `mac_*` — belong to
-the Wave 2 Home Mac Worker slice and are asserted to exist at G2, not G1, so
-this slice cannot silently claim them.
+Both gates are asserted as *closed enumerations* (B3's remediation): a new
+scenario variant that nobody consumes must fail loudly instead of being
+skipped. The G1 scenario sets belong to the DAL-007-013 slice; the G2 scenario
+sets — REC-001 `worker_*` and RESTART-001 `mac_*` — are owned by the DAL-016
+Home Mac Worker slice and replayed here against the same engine.
 """
 
 from __future__ import annotations
@@ -63,14 +63,14 @@ G1_SCENARIOS: dict[str, set[str]] = {
     EVENT_ORDER_TEST_ID: {"out_of_order_event"},
 }
 
-#: G2 variants that exist in the frozen contracts but belong to the Wave 2 Home
-#: Mac Worker slice (DAL-016/017), outside this authorisation.
-G2_VARIANTS: dict[str, set[str]] = {
+#: The exact G2 scenario sets owned by the DAL-016 Home Mac Worker slice.
+G2_SCENARIOS: dict[str, set[str]] = {
     REC_TEST_ID: {"worker_disconnect", "worker_kill"},
     RESTART_TEST_ID: {"mac_retry_limit", "mac_review_limit"},
 }
 
 ALL_TEST_IDS = [REC_TEST_ID, RESTART_TEST_ID, CMD_IDEMPOTENCY_TEST_ID, EVENT_ORDER_TEST_ID]
+G2_TEST_IDS = [REC_TEST_ID, RESTART_TEST_ID]
 
 
 @pytest.fixture(scope="module")
@@ -95,44 +95,38 @@ def test_g1_scenario_sets_are_closed(contracts: FrozenContracts) -> None:
         )
 
 
-def test_wave2_g2_variants_are_not_claimed(contracts: FrozenContracts) -> None:
-    """The `worker_*`/`mac_*` variants stay G2, owned by the Home Mac Worker.
+def test_g2_scenario_sets_are_closed(contracts: FrozenContracts) -> None:
+    """Every G2 variant is consumed; nothing frozen is silently skipped.
 
-    This slice is authorised for the synthetic DAL-007-013 work only. If a
-    worker variant drifted to G1, the closed-enumeration test above would still
-    pass while this slice silently claimed it — so the G2 membership is pinned
-    here as a separate assertion.
+    The `worker_*`/`mac_*` variants are owned by the DAL-016 Home Mac Worker
+    slice and must be replayed here, not merely asserted to exist at G2. The
+    enumeration is exact in both directions.
     """
-    for test_id, expected_g2 in G2_VARIANTS.items():
-        variants = contracts.variants(test_id)
-        by_id = {v.variant_id: v for v in variants}
-        assert set(by_id) >= expected_g2, (
-            f"{test_id} lost a frozen variant: {sorted(expected_g2 - set(by_id))}"
+    for test_id in G2_TEST_IDS:
+        g2 = {
+            v.variant_id for v in contracts.variants(test_id) if v.run_gate == "G2"
+        }
+        assert g2 == G2_SCENARIOS[test_id], (
+            f"{test_id} G2 scenario set drifted: "
+            f"{sorted(g2 ^ G2_SCENARIOS[test_id])}"
         )
-        for variant_id in expected_g2:
-            assert by_id[variant_id].run_gate == "G2", (
-                f"{test_id}/{variant_id} drifted out of G2"
-            )
 
 
-@pytest.mark.parametrize("test_id", ALL_TEST_IDS)
-def test_every_scenario_variant_matches_its_oracle(
-    contracts: FrozenContracts, test_id: str, tmp_path: Path
+def _replay(
+    contracts: FrozenContracts,
+    test_id: str,
+    run_gate: str,
+    tmp_path: Path,
 ) -> None:
-    """Replay every G1 scenario variant and report all divergences at once.
-
-    Parametrising pytest cases would print hundreds of divergence lines on a
-    regression; the loop collects them so a failure reports *which* variants
-    diverged and how, in one place.
-    """
+    """Replay every variant of one gate and report all divergences at once."""
     variants = [
-        v for v in contracts.variants(test_id) if v.run_gate == "G1"
+        v for v in contracts.variants(test_id) if v.run_gate == run_gate
     ]
-    assert variants, f"no G1 variants for {test_id}"
+    assert variants, f"no {run_gate} variants for {test_id}"
 
     failures: list[str] = []
     for index, variant in enumerate(variants):
-        database = tmp_path / f"op-{test_id}-{index}.db"
+        database = tmp_path / f"op-{test_id}-{run_gate}-{index}.db"
         probe = fresh_probe()
         trace = execute_state_machine_fixture(
             variant.fixture.body, database=database, probe=probe
@@ -153,6 +147,22 @@ def test_every_scenario_variant_matches_its_oracle(
             )
 
     assert not failures, (
-        f"{len(failures)} of {len(variants)} {test_id} scenarios diverged:\n"
-        + "\n".join(f"  - {line}" for line in failures)
+        f"{len(failures)} of {len(variants)} {test_id} {run_gate} scenarios "
+        f"diverged:\n" + "\n".join(f"  - {line}" for line in failures)
     )
+
+
+@pytest.mark.parametrize("test_id", ALL_TEST_IDS)
+def test_every_g1_scenario_variant_matches_its_oracle(
+    contracts: FrozenContracts, test_id: str, tmp_path: Path
+) -> None:
+    """Replay every G1 scenario variant against its oracle."""
+    _replay(contracts, test_id, "G1", tmp_path)
+
+
+@pytest.mark.parametrize("test_id", G2_TEST_IDS)
+def test_every_g2_scenario_variant_matches_its_oracle(
+    contracts: FrozenContracts, test_id: str, tmp_path: Path
+) -> None:
+    """Replay every G2 scenario variant against its oracle."""
+    _replay(contracts, test_id, "G2", tmp_path)

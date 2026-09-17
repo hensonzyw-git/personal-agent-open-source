@@ -1,0 +1,409 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "adapter_seam": {
+      "additionalProperties": false,
+      "propertyNames": {
+        "enum": [
+          "injected",
+          "subprocess"
+        ]
+      },
+      "required": [
+        "injected",
+        "subprocess"
+      ],
+      "type": "object"
+    },
+    "block_feature_routes": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "from_states": {
+            "items": {
+              "enum": [
+                "intake",
+                "planning",
+                "awaiting_plan_review",
+                "approved",
+                "coding",
+                "verifying",
+                "reviewing",
+                "fixing",
+                "verified",
+                "awaiting_merge",
+                "merged",
+                "deployed",
+                "completed",
+                "blocked_requirement",
+                "blocked_usage",
+                "blocked_auth",
+                "blocked_test",
+                "blocked_external_prerequisite",
+                "blocked_unknown",
+                "reconciliation_required",
+                "needs_human",
+                "paused",
+                "cancelled"
+              ]
+            },
+            "type": "array"
+          },
+          "reason_code": {
+            "enum": [
+              "AUTH_REQUIRED",
+              "BUDGET_LIMIT",
+              "EXTERNAL_PREREQUISITE",
+              "GIT_CONFLICT",
+              "POLICY_FAILURE",
+              "POST_EFFECT_EXCEPTION",
+              "PROVIDER_CONTRACT_FAILURE",
+              "REQUIREMENT_MISSING",
+              "REVIEW_LOOP_LIMIT",
+              "STATE_DRIFT",
+              "TEST_BLOCKED",
+              "TRANSIENT_RETRY_EXHAUSTED",
+              "USAGE_LIMIT"
+            ],
+            "type": "string"
+          },
+          "to_state": {
+            "enum": [
+              "intake",
+              "planning",
+              "awaiting_plan_review",
+              "approved",
+              "coding",
+              "verifying",
+              "reviewing",
+              "fixing",
+              "verified",
+              "awaiting_merge",
+              "merged",
+              "deployed",
+              "completed",
+              "blocked_requirement",
+              "blocked_usage",
+              "blocked_auth",
+              "blocked_test",
+              "blocked_external_prerequisite",
+              "blocked_unknown",
+              "reconciliation_required",
+              "needs_human",
+              "paused",
+              "cancelled"
+            ]
+          }
+        },
+        "required": [
+          "reason_code",
+          "from_states",
+          "to_state"
+        ],
+        "type": "object"
+      },
+      "maxItems": 13,
+      "minItems": 13,
+      "type": "array"
+    },
+    "dispatch_rows": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "node_type": {
+            "enum": [
+              "deterministic",
+              "gate",
+              "provider",
+              "terminal"
+            ]
+          },
+          "orchestration_action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resulting_commands": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "command_type": {
+                  "enum": [
+                    "accept_current_fact",
+                    "accept_deploy_result",
+                    "accept_merge_result",
+                    "approve_plan",
+                    "block_feature",
+                    "block_unknown",
+                    "cancel_feature",
+                    "complete_after_deploy",
+                    "complete_verified_recovery",
+                    "complete_without_deploy",
+                    "continue_fix",
+                    "open_recovery",
+                    "open_recovery_case",
+                    "pause_feature",
+                    "record_deploy_approval",
+                    "record_deployment",
+                    "record_fix_result",
+                    "record_managed_merge",
+                    "record_merge_approval",
+                    "record_merge_candidate",
+                    "record_observed_deployment",
+                    "record_observed_merge",
+                    "record_plan",
+                    "record_provider_result",
+                    "record_review/findings",
+                    "record_review/pass",
+                    "record_unapproved_observed_deployment",
+                    "record_unapproved_observed_merge",
+                    "record_verification/blocked",
+                    "record_verification/fixable_fail",
+                    "record_verification/pass",
+                    "replan",
+                    "request_revision",
+                    "require_reconciliation",
+                    "resume_after_auth",
+                    "resume_after_prerequisite",
+                    "resume_checkpoint",
+                    "resume_frozen_route",
+                    "resume_with_budget",
+                    "retry_from_checkpoint",
+                    "start_approved_fallback",
+                    "start_managed_deploy",
+                    "start_managed_merge",
+                    "start_plan",
+                    "start_provider",
+                    "supply_requirement"
+                  ]
+                },
+                "to_family": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "to_state": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "command_type",
+                "to_state",
+                "to_family"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "intake",
+              "planning",
+              "awaiting_plan_review",
+              "approved",
+              "coding",
+              "verifying",
+              "reviewing",
+              "fixing",
+              "verified",
+              "awaiting_merge",
+              "merged",
+              "deployed",
+              "completed",
+              "blocked_requirement",
+              "blocked_usage",
+              "blocked_auth",
+              "blocked_test",
+              "blocked_external_prerequisite",
+              "blocked_unknown",
+              "reconciliation_required",
+              "needs_human",
+              "paused",
+              "cancelled"
+            ]
+          }
+        },
+        "required": [
+          "state",
+          "node_type",
+          "orchestration_action",
+          "resulting_commands"
+        ],
+        "type": "object"
+      },
+      "maxItems": 23,
+      "minItems": 23,
+      "type": "array"
+    },
+    "node_taxonomy": {
+      "additionalProperties": false,
+      "propertyNames": {
+        "enum": [
+          "deterministic",
+          "gate",
+          "provider",
+          "terminal"
+        ]
+      },
+      "required": [
+        "deterministic",
+        "gate",
+        "provider",
+        "terminal"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "const": "dal.controller-dispatch/1.0"
+    },
+    "universal_routes": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "command_type": {
+            "enum": [
+              "accept_current_fact",
+              "accept_deploy_result",
+              "accept_merge_result",
+              "approve_plan",
+              "block_feature",
+              "block_unknown",
+              "cancel_feature",
+              "complete_after_deploy",
+              "complete_verified_recovery",
+              "complete_without_deploy",
+              "continue_fix",
+              "open_recovery",
+              "open_recovery_case",
+              "pause_feature",
+              "record_deploy_approval",
+              "record_deployment",
+              "record_fix_result",
+              "record_managed_merge",
+              "record_merge_approval",
+              "record_merge_candidate",
+              "record_observed_deployment",
+              "record_observed_merge",
+              "record_plan",
+              "record_provider_result",
+              "record_review/findings",
+              "record_review/pass",
+              "record_unapproved_observed_deployment",
+              "record_unapproved_observed_merge",
+              "record_verification/blocked",
+              "record_verification/fixable_fail",
+              "record_verification/pass",
+              "replan",
+              "request_revision",
+              "require_reconciliation",
+              "resume_after_auth",
+              "resume_after_prerequisite",
+              "resume_checkpoint",
+              "resume_frozen_route",
+              "resume_with_budget",
+              "retry_from_checkpoint",
+              "start_approved_fallback",
+              "start_managed_deploy",
+              "start_managed_merge",
+              "start_plan",
+              "start_provider",
+              "supply_requirement"
+            ]
+          },
+          "from_states": {
+            "items": {
+              "enum": [
+                "intake",
+                "planning",
+                "awaiting_plan_review",
+                "approved",
+                "coding",
+                "verifying",
+                "reviewing",
+                "fixing",
+                "verified",
+                "awaiting_merge",
+                "merged",
+                "deployed",
+                "completed",
+                "blocked_requirement",
+                "blocked_usage",
+                "blocked_auth",
+                "blocked_test",
+                "blocked_external_prerequisite",
+                "blocked_unknown",
+                "reconciliation_required",
+                "needs_human",
+                "paused",
+                "cancelled"
+              ]
+            },
+            "type": "array"
+          },
+          "reason_family": {
+            "enum": [
+              "CANCEL",
+              "EXTERNAL_RESULT_UNKNOWN",
+              "UNKNOWN_NO_EXTERNAL_INTENT",
+              "USER_PAUSE"
+            ],
+            "type": "string"
+          },
+          "to_state": {
+            "enum": [
+              "intake",
+              "planning",
+              "awaiting_plan_review",
+              "approved",
+              "coding",
+              "verifying",
+              "reviewing",
+              "fixing",
+              "verified",
+              "awaiting_merge",
+              "merged",
+              "deployed",
+              "completed",
+              "blocked_requirement",
+              "blocked_usage",
+              "blocked_auth",
+              "blocked_test",
+              "blocked_external_prerequisite",
+              "blocked_unknown",
+              "reconciliation_required",
+              "needs_human",
+              "paused",
+              "cancelled"
+            ]
+          }
+        },
+        "required": [
+          "command_type",
+          "reason_family",
+          "to_state",
+          "from_states"
+        ],
+        "type": "object"
+      },
+      "maxItems": 4,
+      "minItems": 4,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "node_taxonomy",
+    "adapter_seam",
+    "dispatch_rows",
+    "universal_routes",
+    "block_feature_routes"
+  ],
+  "schema_version": "dal.controller-dispatch/1.0",
+  "title": "controller 调度表闭包 schema",
+  "type": "object"
+}

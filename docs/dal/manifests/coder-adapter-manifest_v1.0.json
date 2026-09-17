@@ -1,0 +1,170 @@
+{
+  "fixture_catalog_sha256": "2da88a1407f3dacf139692b986f1db48e061fde84159622d125c66406447960f",
+  "manifest_sha256": "857b0b0d04e7bf8a6f0bd61269f6337fcfa32428c3a185f49d85b6a1450d32e9",
+  "manifest_version": "1.0",
+  "oracle_catalog_sha256": "960fcb200e3f55d60b88a414c5571a41f9a83e104e51d1df61acd02329ccb639",
+  "registry_sha256": "0c0ece280b24d4cdda0d5b1989f2a9b5f6c3b3a7a887acfce632ad863d76684e",
+  "schema_version": "dal.coder-adapter-manifest/1.0",
+  "test_variants": [
+    {
+      "fixture_ref": "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/happy_multi_tool/G3/1.0",
+      "oracle_id": "dal.coder-adapter.oracle/DAL-T-CODER-CONTRACT-001/happy_multi_tool/G3/1.0",
+      "owner_tasks": [
+        "DAL-026"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "happy_multi_tool"
+    },
+    {
+      "fixture_ref": "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/empty/G3/1.0",
+      "oracle_id": "dal.coder-adapter.oracle/DAL-T-CODER-CONTRACT-001/empty/G3/1.0",
+      "owner_tasks": [
+        "DAL-026"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "empty"
+    },
+    {
+      "fixture_ref": "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/malformed_args/G3/1.0",
+      "oracle_id": "dal.coder-adapter.oracle/DAL-T-CODER-CONTRACT-001/malformed_args/G3/1.0",
+      "owner_tasks": [
+        "DAL-026"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "malformed_args"
+    },
+    {
+      "fixture_ref": "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/half_stream/G3/1.0",
+      "oracle_id": "dal.coder-adapter.oracle/DAL-T-CODER-CONTRACT-001/half_stream/G3/1.0",
+      "owner_tasks": [
+        "DAL-026"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "half_stream"
+    },
+    {
+      "fixture_ref": "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/multi_final/G3/1.0",
+      "oracle_id": "dal.coder-adapter.oracle/DAL-T-CODER-CONTRACT-001/multi_final/G3/1.0",
+      "owner_tasks": [
+        "DAL-026"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "multi_final"
+    },
+    {
+      "fixture_ref": "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/turn_ceiling/G3/1.0",
+      "oracle_id": "dal.coder-adapter.oracle/DAL-T-CODER-CONTRACT-001/turn_ceiling/G3/1.0",
+      "owner_tasks": [
+        "DAL-026"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "turn_ceiling"
+    },
+    {
+      "fixture_ref": "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/context_drift/G3/1.0",
+      "oracle_id": "dal.coder-adapter.oracle/DAL-T-CODER-CONTRACT-001/context_drift/G3/1.0",
+      "owner_tasks": [
+        "DAL-026"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "context_drift"
+    },
+    {
+      "fixture_ref": "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/cancel/G3/1.0",
+      "oracle_id": "dal.coder-adapter.oracle/DAL-T-CODER-CONTRACT-001/cancel/G3/1.0",
+      "owner_tasks": [
+        "DAL-026"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "cancel"
+    },
+    {
+      "fixture_ref": "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/quota/G3/1.0",
+      "oracle_id": "dal.coder-adapter.oracle/DAL-T-CODER-CONTRACT-001/quota/G3/1.0",
+      "owner_tasks": [
+        "DAL-026"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "quota"
+    },
+    {
+      "fixture_ref": "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/transient/G3/1.0",
+      "oracle_id": "dal.coder-adapter.oracle/DAL-T-CODER-CONTRACT-001/transient/G3/1.0",
+      "owner_tasks": [
+        "DAL-026"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "transient"
+    },
+    {
+      "fixture_ref": "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/recovery/G3/1.0",
+      "oracle_id": "dal.coder-adapter.oracle/DAL-T-CODER-CONTRACT-001/recovery/G3/1.0",
+      "owner_tasks": [
+        "DAL-026"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "recovery"
+    },
+    {
+      "fixture_ref": "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/real_auth/G3/1.0",
+      "oracle_id": "dal.coder-adapter.oracle/DAL-T-CODER-CONTRACT-001/real_auth/G3/1.0",
+      "owner_tasks": [
+        "DAL-026"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "real_auth"
+    },
+    {
+      "fixture_ref": "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/tampered_host/G3/1.0",
+      "oracle_id": "dal.coder-adapter.oracle/DAL-T-CODER-CONTRACT-001/tampered_host/G3/1.0",
+      "owner_tasks": [
+        "DAL-026"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "tampered_host"
+    },
+    {
+      "fixture_ref": "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/classifier_drift/G3/1.0",
+      "oracle_id": "dal.coder-adapter.oracle/DAL-T-CODER-CONTRACT-001/classifier_drift/G3/1.0",
+      "owner_tasks": [
+        "DAL-026"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "classifier_drift"
+    },
+    {
+      "fixture_ref": "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/out_of_scope_patch/G3/1.0",
+      "oracle_id": "dal.coder-adapter.oracle/DAL-T-CODER-CONTRACT-001/out_of_scope_patch/G3/1.0",
+      "owner_tasks": [
+        "DAL-026"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "out_of_scope_patch"
+    },
+    {
+      "fixture_ref": "dal.coder-adapter.fixture/DAL-T-CODER-CONTRACT-001/done_diff_empty/G3/1.0",
+      "oracle_id": "dal.coder-adapter.oracle/DAL-T-CODER-CONTRACT-001/done_diff_empty/G3/1.0",
+      "owner_tasks": [
+        "DAL-026"
+      ],
+      "run_gate": "G3",
+      "test_id": "DAL-T-CODER-CONTRACT-001",
+      "variant_id": "done_diff_empty"
+    }
+  ]
+}

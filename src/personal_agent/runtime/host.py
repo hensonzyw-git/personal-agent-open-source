@@ -350,9 +350,12 @@ class DurableRunHost:
         from personal_agent.api.orchestrator import ToolCall, _with_host_defaulted_occurred_on
         with self.deps.session_factory() as s:
             operation = s.get(Operation, self.operation_id)
-            model_args = _with_host_defaulted_occurred_on(
-                self.envelope, operation, ToolCall(name, args['arguments'])
-            )
+            received_at = operation.api_request.received_at
+        # Capture the durable receipt and close the read transaction before
+        # authorization or any external dispatcher call.
+        model_args = _with_host_defaulted_occurred_on(
+            self.envelope, received_at, ToolCall(name, args['arguments'])
+        )
         cleaned=self.deps.build_authorizer(self.auth)(tool=name,model_args=model_args)
         if spec.kind=='read':
             request={'tool':name,'arguments':cleaned}

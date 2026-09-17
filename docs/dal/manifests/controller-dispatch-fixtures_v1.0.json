@@ -1,0 +1,451 @@
+{
+  "catalog_sha256": "83b55e4c00ed9278d87bea9186c1adca558b6a0a27a153f5c3cdf1c08d0d108d",
+  "fixtures": {
+    "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/deterministic_node_no_provider/G3/1.0": {
+      "attempted_resulting_command": null,
+      "controller_facts": {
+        "cancel_receipt_present": false,
+        "has_findings_receipt_since_plan": false,
+        "preflight_receipt_present": true,
+        "prior_findings_receipts": 0,
+        "record_plan_receipt_present": true,
+        "review_fix_cycle_count": 0
+      },
+      "injected_provider_stream": [
+        {
+          "type": "final"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "verifying",
+        "version": 7
+      },
+      "provider_attempted": true,
+      "run_gate": "G3",
+      "schema_version": "dal.controller-dispatch-fixture/1.0",
+      "seam": "injected",
+      "test_id": "DAL-T-GRAPH-001",
+      "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+      "variant_id": "deterministic_node_no_provider"
+    },
+    "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/drift_fail_closed/G3/1.0": {
+      "attempted_resulting_command": null,
+      "controller_facts": {
+        "cancel_receipt_present": false,
+        "has_findings_receipt_since_plan": false,
+        "preflight_receipt_present": true,
+        "prior_findings_receipts": 0,
+        "record_plan_receipt_present": true,
+        "review_fix_cycle_count": 0
+      },
+      "injected_provider_stream": [
+        {
+          "content": "done",
+          "drift": true,
+          "type": "final"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "provider_attempted": false,
+      "run_gate": "G3",
+      "schema_version": "dal.controller-dispatch-fixture/1.0",
+      "seam": "injected",
+      "test_id": "DAL-T-GRAPH-001",
+      "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+      "variant_id": "drift_fail_closed"
+    },
+    "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/handler_pass_fail_composition/G3/1.0": {
+      "attempted_resulting_command": null,
+      "controller_facts": {
+        "cancel_receipt_present": false,
+        "has_findings_receipt_since_plan": false,
+        "preflight_receipt_present": true,
+        "prior_findings_receipts": 0,
+        "record_plan_receipt_present": true,
+        "review_fix_cycle_count": 0
+      },
+      "injected_provider_stream": [
+        {
+          "disposition": "approve",
+          "independence_reuse": true,
+          "type": "final"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "provider_attempted": false,
+      "run_gate": "G3",
+      "schema_version": "dal.controller-dispatch-fixture/1.0",
+      "seam": "injected",
+      "test_id": "DAL-T-GRAPH-001",
+      "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+      "variant_id": "handler_pass_fail_composition"
+    },
+    "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/loop_limit_in_fixing/G3/1.0": {
+      "attempted_resulting_command": null,
+      "controller_facts": {
+        "cancel_receipt_present": false,
+        "has_findings_receipt_since_plan": false,
+        "preflight_receipt_present": true,
+        "prior_findings_receipts": 0,
+        "record_plan_receipt_present": true,
+        "review_fix_cycle_count": 3
+      },
+      "injected_provider_stream": [
+        {
+          "type": "final"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "fixing",
+        "version": 7
+      },
+      "provider_attempted": false,
+      "run_gate": "G3",
+      "schema_version": "dal.controller-dispatch-fixture/1.0",
+      "seam": "injected",
+      "test_id": "DAL-T-GRAPH-001",
+      "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+      "variant_id": "loop_limit_in_fixing"
+    },
+    "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/provider_node_cancelled/G3/1.0": {
+      "attempted_resulting_command": null,
+      "controller_facts": {
+        "cancel_receipt_present": true,
+        "has_findings_receipt_since_plan": false,
+        "preflight_receipt_present": true,
+        "prior_findings_receipts": 0,
+        "record_plan_receipt_present": true,
+        "review_fix_cycle_count": 0
+      },
+      "injected_provider_stream": [
+        "cancelled"
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "provider_attempted": false,
+      "run_gate": "G3",
+      "schema_version": "dal.controller-dispatch-fixture/1.0",
+      "seam": "injected",
+      "test_id": "DAL-T-GRAPH-001",
+      "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+      "variant_id": "provider_node_cancelled"
+    },
+    "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/provider_node_cancelled_no_receipt/G3/1.0": {
+      "attempted_resulting_command": null,
+      "controller_facts": {
+        "cancel_receipt_present": false,
+        "has_findings_receipt_since_plan": false,
+        "preflight_receipt_present": true,
+        "prior_findings_receipts": 0,
+        "record_plan_receipt_present": true,
+        "review_fix_cycle_count": 0
+      },
+      "injected_provider_stream": [
+        "cancelled"
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "provider_attempted": false,
+      "run_gate": "G3",
+      "schema_version": "dal.controller-dispatch-fixture/1.0",
+      "seam": "injected",
+      "test_id": "DAL-T-GRAPH-001",
+      "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+      "variant_id": "provider_node_cancelled_no_receipt"
+    },
+    "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/provider_node_empty_response/G3/1.0": {
+      "attempted_resulting_command": null,
+      "controller_facts": {
+        "cancel_receipt_present": false,
+        "has_findings_receipt_since_plan": false,
+        "preflight_receipt_present": true,
+        "prior_findings_receipts": 0,
+        "record_plan_receipt_present": true,
+        "review_fix_cycle_count": 0
+      },
+      "injected_provider_stream": [],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "provider_attempted": false,
+      "run_gate": "G3",
+      "schema_version": "dal.controller-dispatch-fixture/1.0",
+      "seam": "injected",
+      "test_id": "DAL-T-GRAPH-001",
+      "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+      "variant_id": "provider_node_empty_response"
+    },
+    "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/provider_node_wrong_route/G3/1.0": {
+      "attempted_resulting_command": "record_review/pass",
+      "controller_facts": {
+        "cancel_receipt_present": false,
+        "has_findings_receipt_since_plan": false,
+        "preflight_receipt_present": true,
+        "prior_findings_receipts": 0,
+        "record_plan_receipt_present": true,
+        "review_fix_cycle_count": 0
+      },
+      "injected_provider_stream": [
+        {
+          "content": "done",
+          "type": "final"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "provider_attempted": false,
+      "run_gate": "G3",
+      "schema_version": "dal.controller-dispatch-fixture/1.0",
+      "seam": "injected",
+      "test_id": "DAL-T-GRAPH-001",
+      "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+      "variant_id": "provider_node_wrong_route"
+    },
+    "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/round_dispatch_after_replan/G3/1.0": {
+      "attempted_resulting_command": null,
+      "controller_facts": {
+        "cancel_receipt_present": false,
+        "has_findings_receipt_since_plan": false,
+        "preflight_receipt_present": true,
+        "prior_findings_receipts": 2,
+        "record_plan_receipt_present": true,
+        "review_fix_cycle_count": 0
+      },
+      "injected_provider_stream": [
+        {
+          "disposition": "approve",
+          "type": "final"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "provider_attempted": false,
+      "run_gate": "G3",
+      "schema_version": "dal.controller-dispatch-fixture/1.0",
+      "seam": "injected",
+      "test_id": "DAL-T-GRAPH-001",
+      "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+      "variant_id": "round_dispatch_after_replan"
+    },
+    "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/round_dispatch_first/G3/1.0": {
+      "attempted_resulting_command": null,
+      "controller_facts": {
+        "cancel_receipt_present": false,
+        "has_findings_receipt_since_plan": false,
+        "preflight_receipt_present": true,
+        "prior_findings_receipts": 0,
+        "record_plan_receipt_present": true,
+        "review_fix_cycle_count": 0
+      },
+      "injected_provider_stream": [
+        {
+          "disposition": "approve",
+          "type": "final"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "provider_attempted": false,
+      "run_gate": "G3",
+      "schema_version": "dal.controller-dispatch-fixture/1.0",
+      "seam": "injected",
+      "test_id": "DAL-T-GRAPH-001",
+      "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+      "variant_id": "round_dispatch_first"
+    },
+    "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/round_dispatch_gaps_only/G3/1.0": {
+      "attempted_resulting_command": null,
+      "controller_facts": {
+        "cancel_receipt_present": false,
+        "has_findings_receipt_since_plan": true,
+        "preflight_receipt_present": true,
+        "prior_findings_receipts": 0,
+        "record_plan_receipt_present": true,
+        "review_fix_cycle_count": 0
+      },
+      "injected_provider_stream": [
+        {
+          "acceptance_gaps": [
+            {
+              "acceptance_id": "A-1"
+            }
+          ],
+          "type": "final",
+          "verdict": "changes_requested"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "provider_attempted": false,
+      "run_gate": "G3",
+      "schema_version": "dal.controller-dispatch-fixture/1.0",
+      "seam": "injected",
+      "test_id": "DAL-T-GRAPH-001",
+      "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+      "variant_id": "round_dispatch_gaps_only"
+    },
+    "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/round_dispatch_post_fix/G3/1.0": {
+      "attempted_resulting_command": null,
+      "controller_facts": {
+        "cancel_receipt_present": false,
+        "has_findings_receipt_since_plan": true,
+        "preflight_receipt_present": true,
+        "prior_findings_receipts": 0,
+        "record_plan_receipt_present": true,
+        "review_fix_cycle_count": 0
+      },
+      "injected_provider_stream": [
+        {
+          "type": "final",
+          "verdict": "verified"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "reviewing",
+        "version": 7
+      },
+      "provider_attempted": false,
+      "run_gate": "G3",
+      "schema_version": "dal.controller-dispatch-fixture/1.0",
+      "seam": "injected",
+      "test_id": "DAL-T-GRAPH-001",
+      "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+      "variant_id": "round_dispatch_post_fix"
+    },
+    "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/seam_injection_no_subprocess/G3/1.0": {
+      "attempted_resulting_command": null,
+      "controller_facts": {
+        "cancel_receipt_present": false,
+        "has_findings_receipt_since_plan": false,
+        "preflight_receipt_present": true,
+        "prior_findings_receipts": 0,
+        "record_plan_receipt_present": true,
+        "review_fix_cycle_count": 0
+      },
+      "injected_provider_stream": [
+        {
+          "content": "done",
+          "type": "final"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "provider_attempted": false,
+      "run_gate": "G3",
+      "schema_version": "dal.controller-dispatch-fixture/1.0",
+      "seam": "injected",
+      "test_id": "DAL-T-GRAPH-001",
+      "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+      "variant_id": "seam_injection_no_subprocess"
+    },
+    "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/seam_subprocess_gated/G3/1.0": {
+      "attempted_resulting_command": null,
+      "controller_facts": {
+        "cancel_receipt_present": false,
+        "has_findings_receipt_since_plan": false,
+        "preflight_receipt_present": false,
+        "prior_findings_receipts": 0,
+        "record_plan_receipt_present": true,
+        "review_fix_cycle_count": 0
+      },
+      "injected_provider_stream": [
+        {
+          "content": "done",
+          "type": "final"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "provider_attempted": false,
+      "run_gate": "G3",
+      "schema_version": "dal.controller-dispatch-fixture/1.0",
+      "seam": "subprocess",
+      "test_id": "DAL-T-GRAPH-001",
+      "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+      "variant_id": "seam_subprocess_gated"
+    },
+    "dal.controller-dispatch.fixture/DAL-T-GRAPH-001/transition_legality/G3/1.0": {
+      "attempted_resulting_command": "fabricated_command",
+      "controller_facts": {
+        "cancel_receipt_present": false,
+        "has_findings_receipt_since_plan": false,
+        "preflight_receipt_present": true,
+        "prior_findings_receipts": 0,
+        "record_plan_receipt_present": true,
+        "review_fix_cycle_count": 0
+      },
+      "injected_provider_stream": [
+        {
+          "content": "done",
+          "type": "final"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "planning",
+        "version": 7
+      },
+      "provider_attempted": false,
+      "run_gate": "G3",
+      "schema_version": "dal.controller-dispatch-fixture/1.0",
+      "seam": "injected",
+      "test_id": "DAL-T-GRAPH-001",
+      "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06",
+      "variant_id": "transition_legality"
+    }
+  },
+  "schema_version": "dal.controller-dispatch-fixture-catalog/1.0",
+  "transition_registry_sha256": "028bdfae77f614b996f746f2e8b14e0a0ab3cc13b92dd0f9cc957b37ad346f06"
+}

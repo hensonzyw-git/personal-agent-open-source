@@ -46,6 +46,10 @@ personal-agent-cleanup = "personal_agent.cleanup_cli:main"
 personal-agent-device = "personal_agent.device_cli:main"
 personal-agent-db = "personal_agent.storage.db:main"
 personal-agent-dal-db = "personal_agent_dal.storage.db:main"
+personal-agent-dal-worker = "personal_agent_dal.worker.cli:main"
+personal-agent-dal-api = "personal_agent_dal.service.cli:main"
+personal-agent-dal-deploy = "personal_agent_dal.service.deployment_cli:main"
+personal-agent-dal-console = "personal_agent_dal.service.operator_cli:main"
 personal-agent-export-deletion-manifest = "personal_agent.backup.export_cli:main"
 personal-agent-media-backup-bundle = "personal_agent.backup.media_bundle_cli:main"
 personal-agent-restore-verify = "personal_agent.backup.restore_cli:main"
@@ -81,6 +85,15 @@ packages = [
 [tool.hatch.build.targets.wheel.force-include]
 "evals/finance_v0.2.jsonl" = "personal_agent_core/data/finance_v0.2.jsonl"
 "spec/scoring_policy.yml" = "risk_monitor/scoring/scoring_policy.yml"
+
+# The frozen DAL contract registries ship as real package data under
+# src/personal_agent_dal/frozen_contracts/ (manifests + dal_jcs.py, copied
+# verbatim from docs/dal/ — the checkout copy is the frozen master). The
+# registry loader hash-verifies whichever copy it opens; in a venv/wheel
+# deploy the docs/ tree does not exist (R10 T1 intake, 2026-09-09), so the
+# packaged copy is the primary candidate and the checkout path is the
+# fallback. tests/dal/test_registry_manifest_resolution.py pins that both
+# copies stay byte-identical.
 
 [tool.pytest.ini_options]
 addopts = "-q"

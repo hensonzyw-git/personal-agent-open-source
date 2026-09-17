@@ -545,13 +545,13 @@ def test_inventory_counts_recovery_case_owned_effects(tmp_path: Path) -> None:
         session_factory,
     )
     from tests.dal.factories import (
-        approval_row,
         capability_row,
         decision_row,
         external_effect_row,
         feature_row,
         lease_row,
         recovery_case_row,
+        state_binding_sha256,
     )
 
     database = tmp_path / "inventory.db"
@@ -559,7 +559,9 @@ def test_inventory_counts_recovery_case_owned_effects(tmp_path: Path) -> None:
     db.upgrade(engine)
     sessions = session_factory(engine)
     with sessions() as session, session.begin():
-        session.add(feature_row(feature_id="feat-1", version=1, state="coding"))
+        feature = feature_row(feature_id="feat-1", version=1, state="coding")
+        session.add(feature)
+        protected_state_sha256 = state_binding_sha256(feature)
         session.add(
             recovery_case_row(
                 recovery_case_id="rc-1", feature_id="feat-1",
@@ -573,9 +575,13 @@ def test_inventory_counts_recovery_case_owned_effects(tmp_path: Path) -> None:
                 version=1, state="confirmed_completed", owner_type="recovery_case",
             )
         )
-        # The cancel write set consumes a decision, a capability and a lease.
-        session.add(decision_row(feature_id="feat-1"))
-        session.add(approval_row(feature_id="feat-1"))
+        # The cancel write set consumes a decision and revokes capability/lease;
+        # it does not consume an approval.
+        session.add(
+            decision_row(
+                feature_id="feat-1", state_sha256=protected_state_sha256
+            )
+        )
         session.add(capability_row(feature_id="feat-1"))
         session.add(lease_row(feature_id="feat-1"))
 
@@ -600,7 +606,13 @@ def test_inventory_counts_recovery_case_owned_effects(tmp_path: Path) -> None:
         aggregate_type="feature",
         aggregate_id="feat-1",
         command_type="cancel_feature",
-        command_parameters={"target_state": "cancelled", "effect_outcome": None},
+            command_parameters={
+                "target_state": "cancelled",
+                "effect_outcome": None,
+                "decision_id": "decision-seeded",
+                "submitted_decision_version": 1,
+                "observed_state_sha256": protected_state_sha256,
+            },
         actor_type="human",
         evidence_source_types=("registered-device",),
         evidence_schema_versions=("dal.evidence.cancellation-impact/1.0",),

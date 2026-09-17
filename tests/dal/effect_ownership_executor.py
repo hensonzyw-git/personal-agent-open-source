@@ -99,6 +99,7 @@ def _seed(engine: Any, fixture_body: dict[str, Any], spec: dict[str, Any] | None
         external_effect_row,
         feature_row,
         recovery_case_row,
+        state_binding_sha256,
     )
 
     inp = fixture_body["operation_sequence"][0]["input"]
@@ -124,7 +125,10 @@ def _seed(engine: Any, fixture_body: dict[str, Any], spec: dict[str, Any] | None
             session.add(feature)
         elif root_type == "recovery_case":
             # A recovery case needs an owning feature.
-            session.add(feature_row(feature_id="feat-owner", version=1, state="coding"))
+            feature = feature_row(
+                feature_id="feat-owner", version=1, state="coding"
+            )
+            session.add(feature)
             session.add(
                 recovery_case_row(
                     recovery_case_id=root_id,
@@ -133,6 +137,7 @@ def _seed(engine: Any, fixture_body: dict[str, Any], spec: dict[str, Any] | None
                     state=root["state"],
                 )
             )
+        protected_state_sha256 = state_binding_sha256(feature)
 
         # The external effect, from the snapshot.
         session.add(
@@ -155,12 +160,24 @@ def _seed(engine: Any, fixture_body: dict[str, Any], spec: dict[str, Any] | None
                 decision_row(
                     feature_id=root_id if root_type == "feature" else "feat-owner",
                     decision_id=f"decision-seeded-{ordinal}-{member}",
+                    state_sha256=protected_state_sha256,
                 )
             )
         if "approval_consume" in writes:
+            decision_id = (
+                "decision-seeded-0-decision_resolve"
+                if "decision_resolve" in decision_members
+                else None
+            )
             session.add(
                 approval_row(
-                    feature_id=root_id if root_type == "feature" else "feat-owner"
+                    feature_id=root_id if root_type == "feature" else "feat-owner",
+                    action=spec["requires_decision_action"] or spec["command_type"],
+                    decision_id=decision_id,
+                    decision_version=1 if decision_id is not None else None,
+                    expected_feature_version=feature.version,
+                    expected_state=feature.state,
+                    state_sha256=protected_state_sha256,
                 )
             )
         if writes & {"capability_consume", "capability_revoke"}:
@@ -387,6 +404,10 @@ def execute_ownership_fixture(
     command = TransitionCommand.from_fixture(
         cmd_with_spec, idempotency_key=cmd_body["idempotency_key"]
     )
+    if spec is not None:
+        from tests.dal.transition_executor import bind_command_authority
+
+        command = bind_command_authority(engine, command, spec["spec_id"])
     facts = _guard_facts(cmd_body, root, eff, spec)
 
     before = _state_snapshot(engine)

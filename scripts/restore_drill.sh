@@ -92,6 +92,7 @@ restic restore latest --target "$RESTORE_DIR"
 # Locate the restored snapshots. restic restores the full path tree, so the
 # files land under $RESTORE_DIR/var/backups/personal-agent/.
 MCP_DB="$RESTORE_DIR/var/backups/personal-agent/mcp/finance.latest.sqlite"
+DAL_DB="$RESTORE_DIR/var/backups/personal-agent/dal/dal.latest.sqlite"
 RUNS="$RESTORE_DIR/var/backups/personal-agent/api/media-runs"
 mapfile -t BUNDLES < <(find "$RUNS" -mindepth 1 -maxdepth 1 -type d -name '????????-????-4???-[89ab]???-????????????' -print 2>/dev/null)
 if [ "${#BUNDLES[@]}" -ne 1 ]; then
@@ -108,12 +109,16 @@ MANIFEST="$LATEST_DELETION_MANIFEST"
 case "$MANIFEST" in
   "$RESTORE_DIR"/*) echo "FAIL: manifest must be independent of restored snapshot" >&2; exit 1 ;;
 esac
-for f in "$API_DB" "$MCP_DB" "$MANIFEST"; do
+for f in "$API_DB" "$MCP_DB" "$DAL_DB" "$MANIFEST"; do
   if [ ! -s "$f" ]; then
     echo "FAIL: restored file missing or empty: $f" >&2
     exit 1
   fi
 done
+# R09-B's current ``latest`` backup contract always includes DAL. Historical
+# compatibility belongs to an explicitly selected, timestamp-bounded drill;
+# silently accepting a missing file in ``latest`` would turn a partial restore
+# into false recovery evidence.
 
 echo "== 2-6. library checks (integrity, schema, refs, AEAD sample, replay) =="
 export PERSONAL_AGENT_DATA_ACTIVE_KID="$DATA_KID"
@@ -131,6 +136,7 @@ fi
   --agent-database "$API_DB" \
   --finance-database "$MCP_DB" \
   --manifest "$MANIFEST" \
+  --dal-database "$DAL_DB" \
   --media-bundle "$BUNDLE_DIR" \
   "${SAMPLE_ARGS[@]}" \
   || { echo "FAIL: library restore checks" >&2; exit 1; }

@@ -32,6 +32,7 @@ from sqlalchemy import (
     Integer,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -75,6 +76,32 @@ DECISION_STATUSES: Final[tuple[str, ...]] = (
 
 #: Decision Dock rank, contract §3.5. Fixed, and not re-derivable by a client.
 DOCK_RANKS: Final[tuple[int, ...]] = (0, 1, 2, 3, 4)
+
+#: Notification priority, contract §3.5.2. Independent of `dock_rank`: the rank
+#: is display ordering, this is the notification strategy.
+NOTIFICATION_PRIORITIES: Final[tuple[str, ...]] = ("immediate", "normal")
+
+#: Notification batch states, contract §3.7.
+NOTIFICATION_BATCH_STATES: Final[tuple[str, ...]] = (
+    "open",
+    "ready",
+    "closed",
+    "superseded",
+    "cancelled",
+)
+
+#: Notification delivery states, contract §3.7. `claimed` is present here and
+#: deliberately absent from `outbox_events.delivery_state`: delivery is its own
+#: state machine, not the outbox's.
+NOTIFICATION_DELIVERY_STATES: Final[tuple[str, ...]] = (
+    "pending",
+    "claimed",
+    "delivering",
+    "delivered",
+    "retry_wait",
+    "dead_letter",
+    "cancelled",
+)
 
 
 class TransitionReceipt(Base):
@@ -144,11 +171,28 @@ class Decision(Base):
     artifact_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
     state_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_incident: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    root_id: Mapped[str] = mapped_column(Text, nullable=False)
+    safety_or_irreversible: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    blocking_scope: Mapped[str] = mapped_column(Text, nullable=False)
+    depends_on_json: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(UtcTimestamp, nullable=True)
+    superseded_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notification_priority: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
 
     __table_args__ = (
         CheckConstraint(_in_set("status", DECISION_STATUSES), name="status"),
+        CheckConstraint(
+            "blocking_scope IN ('global', 'local', 'none')",
+            name="blocking_scope",
+        ),
+        CheckConstraint(
+            _in_set("notification_priority", NOTIFICATION_PRIORITIES),
+            name="notification_priority",
+        ),
         Index("ix_decisions_feature_id", "feature_id"),
     )
 
@@ -168,6 +212,7 @@ class DecisionCardProjection(Base):
         ForeignKey("decisions.decision_id"), nullable=False
     )
     decision_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    projection_version: Mapped[int] = mapped_column(Integer, nullable=False)
     actionable: Mapped[bool] = mapped_column(Boolean, nullable=False)
     display_state: Mapped[str] = mapped_column(Text, nullable=False)
     dock_rank: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -312,6 +357,242 @@ class Lease(Base):
     )
 
 
+WORKFLOW_ATTEMPT_STATES: Final[tuple[str, ...]] = (
+    "prepared",
+    "dispatching",
+    "result_recorded",
+    "unknown",
+    "superseded",
+)
+
+EXECUTION_GATE_MODES: Final[tuple[str, ...]] = (
+    "open",
+    "paused",
+    "cancelled",
+    "delivered",
+)
+
+
+ACTION_EXECUTION_COMPLETE = """(
+ execution_contract_version IS NULL AND execution_role IS NULL AND
+ execution_input_body IS NULL AND completion_mode IS NULL AND completion_policy_revision IS NULL
+) OR (
+ execution_contract_version IS NOT NULL AND execution_contract_version = 'dal.action-execution/1.0'
+ AND kind = 'provider' AND execution_role IS NOT NULL AND execution_role IN ('planner','coder','reviewer')
+ AND execution_input_body IS NOT NULL AND length(execution_input_body) > 0
+ AND completion_mode IS NOT NULL AND (
+ (completion_mode = 'report_only' AND completion_policy_revision IS NULL) OR
+ (completion_mode = 'feature_transition' AND completion_policy_revision IS NOT NULL
+  AND length(completion_policy_revision) > 0 AND stage_id IS NULL)))"""
+
+
+class WorkflowAction(Base):
+    """One version-bound action a feature may dispatch exactly once per key.
+
+    This is the P0-02 persistent boundary before a provider/commit/GitHub
+    call.  ``active_attempt_id`` deliberately has no database foreign key:
+    creating an Action and its first ProviderAttempt is a two-row lifecycle,
+    and a circular FK would either make the action uncreatable or defer SQLite
+    integrity.  The owning action service must CAS-bind it to an attempt whose
+    ``action_id`` is this row; tests for that composition land with the driver.
+    """
+
+    __tablename__ = "workflow_actions"
+
+    action_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    feature_id: Mapped[str] = mapped_column(
+        ForeignKey("features.feature_id"), nullable=False
+    )
+    #: Stage is introduced by a later P0-02 unit, so it is an opaque optional
+    #: identity now rather than a forward FK to a table that does not exist.
+    stage_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    action_key: Mapped[str] = mapped_column(Text, nullable=False)
+    input_binding_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    execution_snapshot_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    execution_contract_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    execution_role: Mapped[str | None] = mapped_column(Text, nullable=True)
+    execution_input_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completion_mode: Mapped[str | None] = mapped_column(Text, nullable=True)
+    completion_policy_revision: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    active_attempt_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(ACTION_EXECUTION_COMPLETE, name="execution_contract_complete"),
+        CheckConstraint("length(kind) > 0", name="kind_non_empty"),
+        CheckConstraint("length(action_key) > 0", name="action_key_non_empty"),
+        CheckConstraint(_hex_of_length("input_binding_sha256", 64, nullable=False),
+                        name="input_binding_sha256_hex"),
+        CheckConstraint(
+            _hex_of_length("execution_snapshot_sha256", 64, nullable=False),
+            name="execution_snapshot_sha256_hex",
+        ),
+        CheckConstraint("version >= 1", name="version_positive"),
+        UniqueConstraint(
+            "feature_id", "action_key", name="uq_workflow_actions_feature_action_key"
+        ),
+        Index("ix_workflow_actions_feature_id", "feature_id"),
+    )
+
+
+class ProviderAttempt(Base):
+    """One pre-reserved provider attempt, including every authority fence."""
+
+    __tablename__ = "provider_attempts"
+
+    attempt_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    action_id: Mapped[str] = mapped_column(
+        ForeignKey("workflow_actions.action_id"), nullable=False
+    )
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    owner_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fence: Mapped[int] = mapped_column(Integer, nullable=False)
+    dispatch_started_at: Mapped[datetime | None] = mapped_column(
+        UtcTimestamp, nullable=True
+    )
+    job_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lease_id: Mapped[str | None] = mapped_column(
+        ForeignKey("leases.lease_id"), nullable=True
+    )
+    job_lease_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    policy_lease_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    approval_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    result_digest: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_recorded_at: Mapped[datetime | None] = mapped_column(
+        UtcTimestamp, nullable=True
+    )
+    result_consumed_at: Mapped[datetime | None] = mapped_column(
+        UtcTimestamp, nullable=True
+    )
+    feature_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    capability_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    report_receipt_id: Mapped[str | None] = mapped_column(
+        ForeignKey("worker_result_receipts.receipt_id", ondelete="RESTRICT"), nullable=True, unique=True)
+    consumption_receipt_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(_in_set("state", WORKFLOW_ATTEMPT_STATES), name="state"),
+        CheckConstraint("attempt_no >= 1", name="attempt_no_positive"),
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint("fence >= 0", name="fence_non_negative"),
+        CheckConstraint(
+            "job_lease_epoch IS NULL OR job_lease_epoch >= 0",
+            name="job_lease_epoch_non_negative",
+        ),
+        CheckConstraint(
+            "policy_lease_epoch IS NULL OR policy_lease_epoch >= 0",
+            name="policy_lease_epoch_non_negative",
+        ),
+        CheckConstraint(
+            "approval_epoch IS NULL OR approval_epoch >= 0",
+            name="approval_epoch_non_negative",
+        ),
+        CheckConstraint(_hex_of_length("result_digest", 64, nullable=True),
+                        name="result_digest_hex"),
+        UniqueConstraint(
+            "action_id", "attempt_no", name="uq_provider_attempts_action_attempt"
+        ),
+        Index("ix_provider_attempts_action_id", "action_id"),
+        Index("ix_provider_attempts_job_id", "job_id"),
+    )
+
+
+class ProviderResultObservation(Base):
+    """Append-only result arrival evidence, including refused late results."""
+
+    __tablename__ = "provider_result_observations"
+    observation_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(ForeignKey("provider_attempts.attempt_id"), nullable=False)
+    owner_id: Mapped[str] = mapped_column(Text, nullable=False)
+    fence: Mapped[int] = mapped_column(Integer, nullable=False)
+    expected_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    digest: Mapped[str] = mapped_column(Text, nullable=False)
+    code: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    __table_args__ = (
+        CheckConstraint(_hex_of_length("digest", 64, nullable=False), name="digest_hex"),
+        Index("ix_provider_result_observations_attempt_id", "attempt_id"),
+    )
+
+
+class ProviderRecoveryReceipt(Base):
+    """Immutable readback evidence and the outcome of a recovery command."""
+
+    __tablename__ = "provider_recovery_receipts"
+    receipt_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    command_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    attempt_id: Mapped[str] = mapped_column(ForeignKey("provider_attempts.attempt_id"), nullable=False)
+    expected_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    requested_by: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_id: Mapped[str] = mapped_column(Text, nullable=False)
+    fence: Mapped[int] = mapped_column(Integer, nullable=False)
+    probe_status: Mapped[str] = mapped_column(Text, nullable=False)
+    probe_code: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
+    code: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    __table_args__ = (
+        CheckConstraint(_hex_of_length("request_sha256", 64, nullable=False), name="request_sha256_hex"),
+        CheckConstraint(_hex_of_length("evidence_sha256", 64, nullable=True), name="evidence_sha256_hex"),
+        CheckConstraint("probe_status IN ('unavailable', 'running', 'stopped', 'partial', 'complete')", name="probe_status"),
+        Index("ix_provider_recovery_receipts_attempt_id", "attempt_id"),
+    )
+
+
+class ExecutionControlReceipt(Base):
+    """Immutable, replayable proof of a stop command and retired authority."""
+
+    __tablename__ = 'execution_control_receipts'
+    receipt_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    command_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    feature_id: Mapped[str] = mapped_column(ForeignKey('features.feature_id'), nullable=False)
+    operation: Mapped[str] = mapped_column(Text, nullable=False)
+    requested_by: Mapped[str] = mapped_column(Text, nullable=False)
+    expected_gate_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    gate_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    approval_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    code: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    __table_args__ = (
+        CheckConstraint(_hex_of_length('request_sha256', 64, nullable=False), name='request_sha256_hex'),
+        CheckConstraint("operation IN ('pause', 'cancel')", name='operation'),
+        CheckConstraint('expected_gate_version >= 1 AND gate_version = expected_gate_version + 1', name='gate_version'),
+        CheckConstraint('approval_epoch >= 1', name='approval_epoch'),
+        CheckConstraint("(operation = 'pause' AND code = 'PAUSED') OR (operation = 'cancel' AND code = 'CANCELLED')", name='code'),
+        Index('ix_execution_control_receipts_feature_id', 'feature_id'),
+    )
+
+
+class ExecutionGate(Base):
+    """Per-feature CAS gate for cancellation, pause, delivery and approval epoch."""
+
+    __tablename__ = "execution_gates"
+
+    feature_id: Mapped[str] = mapped_column(
+        ForeignKey("features.feature_id"), primary_key=True
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    mode: Mapped[str] = mapped_column(Text, nullable=False)
+    approval_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="version_positive"),
+        CheckConstraint(_in_set("mode", EXECUTION_GATE_MODES), name="mode"),
+        CheckConstraint("approval_epoch >= 0", name="approval_epoch_non_negative"),
+    )
+
+
 class ExternalEffect(Base):
     """One attempt to change something outside this database (§3.6).
 
@@ -342,6 +623,14 @@ class ExternalEffect(Base):
     receipt_refs_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
     post_read_refs_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
     impact_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The reconciliation arbitration root: a feature-owned effect's own
+    #: feature id, a recovery-case-owned effect's parent feature id. Stamped
+    #: by `_w_reconciler_claim` at claim time and read by the partial unique
+    #: index below — one live reconciler claim per root, the exact meaning
+    #: of SINGLE_RECONCILER_CLAIM's enumeration (round-2 review finding 4).
+    reconciliation_arbitration_id: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
 
@@ -365,6 +654,99 @@ class ExternalEffect(Base):
         ),
         Index("ix_external_effects_owner", "owner_aggregate_type",
               "owner_aggregate_id"),
+        # F3 (2026-09-07 review) + round-2 finding 4: the SINGLE_RECONCILER
+        # guard's arbitration key. The claim stamps
+        # `reconciliation_arbitration_id` with the reconciliation ROOT (a
+        # feature-owned effect: itself; a recovery-case-owned effect: the
+        # parent feature), and this partial unique index refuses a second
+        # live claim under the same root — including the cross pair
+        # (feature claim + case claim of the same feature) the direct-owner
+        # index could not express. The STILL-UNKNOWN state change vacates
+        # the slot automatically (the predicate requires state='reconciling').
+        Index(
+            "uq_external_effects_one_reconciler_per_root",
+            "reconciliation_arbitration_id",
+            unique=True,
+            sqlite_where=text(
+                "state = 'reconciling' AND executor_id = 'reconciler'"
+            ),
+        ),
+    )
+
+
+#: The closed action set of the dispatch executor's target record. Exactly the
+#: frozen adapter actions; a fourth action would be an unfrozen write surface.
+EFFECT_TARGET_ACTIONS: Final[tuple[str, ...]] = (
+    "push_branch",
+    "create_pull_request",
+    "write_check_run",
+)
+
+
+class EffectDispatchTarget(Base):
+    """The persisted target body of one external effect (R09-B F5).
+
+    The `external_effects` row freezes the *binding* — owner, scope key,
+    remote idempotency key, target fingerprint — but not the payload body
+    itself. The durable dispatch executor must derive owner, action, payload
+    and remote key from persistence, never from an operator's request, so the
+    action and its closed payload are recorded here in the same transaction
+    that records the intent. One row per effect (rearm replaces it); the
+    executor reads, never trusts anything else.
+    """
+
+    __tablename__ = "effect_dispatch_targets"
+
+    effect_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("external_effects.effect_id"), primary_key=True
+    )
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    target_fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(_in_set("action", EFFECT_TARGET_ACTIONS), name="action"),
+        CheckConstraint(
+            _hex_of_length("target_fingerprint", 64, nullable=False),
+            name="fingerprint",
+        ),
+    )
+
+
+class EffectConfirmReceipt(Base):
+    """The executor's proof that a parked effect was confirmed (R09-B R3-1).
+
+    A confirmed write parks in `dispatch_started` — §3.6 freezes no standalone
+    completed edge — and the dispatch marker's `claim_expires_at` makes it
+    indistinguishable, by state alone, from a crash window whose fate is
+    unproven. This one-row-per-effect record is the discriminator: the
+    dispatch composition persists it after a closed success read-back, and the
+    recovery sweep honours it instead of sweeping the park to `unknown`.
+
+    Fail-closed: no receipt means crash-window recovery, and a receipt whose
+    fingerprint no longer matches the effect's binding suppresses nothing.
+    The registry is untouched — this is operator-owned persistence (the
+    precedent of `effect_dispatch_targets`), not a lifecycle edge.
+    """
+
+    __tablename__ = "effect_confirm_receipts"
+
+    effect_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("external_effects.effect_id"), primary_key=True
+    )
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    target_fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
+    composition_key: Mapped[str] = mapped_column(Text, nullable=False)
+    confirmed_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(_in_set("action", EFFECT_TARGET_ACTIONS), name="action"),
+        CheckConstraint(
+            _hex_of_length("target_fingerprint", 64, nullable=False),
+            name="fingerprint",
+        ),
+        CheckConstraint("length(composition_key) > 0", name="composition_key"),
     )
 
 
@@ -468,4 +850,373 @@ class ImpactReport(Base):
         CheckConstraint(_hex_of_length("impact_sha256", 64, nullable=False),
                         name="impact_sha256_hex"),
         Index("ix_impact_reports_feature_id", "feature_id"),
+    )
+
+
+class NotificationBatch(Base):
+    """A fixed-window batch of normal-priority decisions, contract §3.5.2/§3.7.
+
+    The window's `flush_at` is fixed at the first member's entry and never
+    extended by later membership. An `immediate` decision closes the batch and
+    flushes it at once; the batch itself never refuses, it only aggregates.
+    """
+
+    __tablename__ = "notification_batches"
+
+    batch_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    opened_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    flush_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    maximum_items: Mapped[int] = mapped_column(Integer, nullable=False)
+    channel: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            _in_set("state", NOTIFICATION_BATCH_STATES), name="state"
+        ),
+        UniqueConstraint("batch_id", "channel", "payload_sha256", name="batch_channel_payload"),
+    )
+
+
+class NotificationDelivery(Base):
+    """One delivery of a notification batch, contract §3.7.
+
+    Its state machine is independent of the outbox: a delivery is claimed
+    (compare-and-swap on `claim_epoch`), marked `delivering`, and then either
+    `delivered`, `retry_wait` (bounded backoff), `dead_letter` (attempt limit
+    exhausted) or `cancelled` (every decision no longer valid).
+    """
+
+    __tablename__ = "notification_deliveries"
+
+    delivery_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    batch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    batch_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    claim_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        UtcTimestamp, nullable=True
+    )
+    provider_receipt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            _in_set("state", NOTIFICATION_DELIVERY_STATES), name="state"
+        ),
+        CheckConstraint("claim_epoch >= 1", name="claim_epoch_positive"),
+        CheckConstraint("attempt_count >= 0", name="attempt_count_non_negative"),
+        Index("ix_notification_deliveries_batch_id", "batch_id"),
+    )
+
+
+#: The one legal value of `commit_capabilities.action` (DAL-004 §5). A
+#: one-time commit capability authorises exactly one candidate commit.
+COMMIT_CAPABILITY_ACTIONS: Final[tuple[str, ...]] = ("commit_candidate",)
+
+#: The frozen state set for the consume CAS (DAL-004 §5: sign, consume, and
+#: receipt persistence all go through a capability version CAS). `issued` is
+#: the only live state; `consumed` and `superseded` are terminal and refused
+#: by the pure gate's liveness classes.
+COMMIT_CAPABILITY_STATES: Final[tuple[str, ...]] = (
+    "issued",
+    "consumed",
+    "superseded",
+)
+
+
+class CommitCapability(Base):
+    """The persistent one-time commit capability row (DAL-031, R09-A3).
+
+    The column set is the field-by-field mapping from
+    `DAL_R09-A3_commit-capability_2026-08-31.md` §5 onto DAL-004 §5's
+    persistent model. It extends what the pure gate's binding already
+    validates (never loosens it) with exactly the fields that mapping
+    declared missing: `action`, `repository_id`,
+    `artifact_or_diff_sha256`, `policy_version`, `consumed_at` and a
+    row-level `schema_version`.
+
+    `state_version` is the CAS column. Every consume carries the version it
+    expects to replace and moves `issued -> consumed` with the consuming
+    identity in the same statement, so two racing consumes produce exactly
+    one winner and one loser that re-reads a dead row. Consumption,
+    the external-effect intent, the audit append and the outbox row are
+    written in the caller's one transaction (DAL-004 §5: they must be
+    atomic); this model only owns the capability row itself.
+    """
+
+    __tablename__ = "commit_capabilities"
+
+    capability_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    schema_version: Mapped[str] = mapped_column(Text, nullable=False)
+    #: The CAS column: the version the next mutation expects to replace.
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    approval_id: Mapped[str] = mapped_column(Text, nullable=False)
+    feature_id: Mapped[str] = mapped_column(Text, nullable=False)
+    task_id: Mapped[str] = mapped_column(Text, nullable=False)
+    repository_id: Mapped[str] = mapped_column(Text, nullable=False)
+    allowed_paths_json: Mapped[str] = mapped_column(Text, nullable=False)
+    refs: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The digest of the artifact or diff the capability was issued against.
+    #: Distinct from `result_sha` (a git tree SHA); the two must never be
+    #: conflated (evidence §5 mapping row `artifact_or_diff_sha256`).
+    artifact_or_diff_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    base_sha: Mapped[str] = mapped_column(Text, nullable=False)
+    result_sha: Mapped[str] = mapped_column(Text, nullable=False)
+    lease_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    capability_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    expires_at: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_uses: Mapped[int] = mapped_column(Integer, nullable=False)
+    uses_consumed: Mapped[int] = mapped_column(Integer, nullable=False)
+    policy_version: Mapped[str] = mapped_column(Text, nullable=False)
+    issue_idempotency_key: Mapped[str] = mapped_column(
+        Text, nullable=False, unique=True
+    )
+    trailers_json: Mapped[str] = mapped_column(Text, nullable=False)
+    revoked_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    consumed_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    consumed_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            _in_set("state", COMMIT_CAPABILITY_STATES), name="state"
+        ),
+        CheckConstraint(
+            _in_set("action", COMMIT_CAPABILITY_ACTIONS), name="action"
+        ),
+        CheckConstraint("state_version >= 1", name="state_version_positive"),
+        CheckConstraint(
+            "uses_consumed >= 0 AND uses_consumed <= max_uses",
+            name="uses_within_max",
+        ),
+        CheckConstraint("max_uses = 1", name="max_uses_is_one"),
+        CheckConstraint(
+            "(consumed_by IS NULL) = (consumed_at IS NULL)",
+            name="consumption_is_all_or_nothing",
+        ),
+        CheckConstraint(
+            "(consumed_by IS NULL) = (state = 'issued') OR "
+            "(state = 'consumed' AND consumed_by IS NOT NULL)",
+            name="state_matches_consumption",
+        ),
+        CheckConstraint(
+            _hex_of_length("base_sha", 40, nullable=False), name="base_sha_hex"
+        ),
+        CheckConstraint(
+            _hex_of_length("result_sha", 40, nullable=False), name="result_sha_hex"
+        ),
+        CheckConstraint(
+            _hex_of_length("artifact_or_diff_sha256", 64, nullable=False),
+            name="artifact_or_diff_sha256_hex",
+        ),
+        CheckConstraint(
+            "lease_epoch >= 0 AND capability_epoch >= 0",
+            name="epochs_non_negative",
+        ),
+        CheckConstraint("expires_at >= 0", name="expires_at_non_negative"),
+        Index("ix_commit_capabilities_feature_id", "feature_id"),
+    )
+
+
+class WorkflowProfileRevision(Base):
+    __tablename__ = "workflow_profile_revisions"
+
+    revision_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    profile: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    sha256: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+
+    __table_args__ = (
+        CheckConstraint("profile IN ('A', 'B')", name='profile'),
+        CheckConstraint('revision >= 1', name='revision'),
+        UniqueConstraint("profile", "revision", name="uq_workflow_profile_revision"),
+    )
+
+
+class ExecutionSnapshot(Base):
+    __tablename__ = "execution_snapshots"
+
+    sha256: Mapped[str] = mapped_column(Text, primary_key=True)
+    revision_id: Mapped[str] = mapped_column(Text, ForeignKey("workflow_profile_revisions.revision_id", ondelete="RESTRICT"), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class WorkflowSelection(Base):
+    __tablename__ = "workflow_selections"
+
+    selection_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    action_id: Mapped[str | None] = mapped_column(ForeignKey("workflow_actions.action_id", ondelete="RESTRICT"), nullable=True)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    feature_id: Mapped[str] = mapped_column(Text, ForeignKey("features.feature_id", ondelete="RESTRICT"), nullable=False)
+    feature_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    gate_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot_sha256: Mapped[str] = mapped_column(Text, ForeignKey("execution_snapshots.sha256", ondelete="RESTRICT"), nullable=False)
+    actor: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint('feature_version >= 1 AND gate_version >= 1', name='versions'),
+    )
+
+
+class ResumeProposal(Base):
+    __tablename__ = "resume_proposals"
+
+    source_snapshot_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+
+    proposal_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    binding: Mapped[str] = mapped_column(Text, nullable=False)
+    binding_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class ResumeApprovalBinding(Base):
+    __tablename__ = "resume_approval_bindings"
+
+    approval_id: Mapped[str] = mapped_column(Text, ForeignKey("approvals.approval_id", ondelete="RESTRICT"), primary_key=True)
+    proposal_id: Mapped[str] = mapped_column(Text, ForeignKey("resume_proposals.proposal_id", ondelete="RESTRICT"), nullable=False)
+    decision_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    jti: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    claims: Mapped[str] = mapped_column(Text, nullable=False)
+    claims_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    key_thumbprint: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ResumeRevocation(Base):
+    __tablename__ = "resume_revocations"
+
+    decision_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class ResumeReceipt(Base):
+    __tablename__ = "resume_receipts"
+
+    receipt_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class ReplacementBudget(Base):
+    __tablename__ = "replacement_budgets"
+
+    old_attempt_id: Mapped[str] = mapped_column(Text, ForeignKey("provider_attempts.attempt_id", ondelete="RESTRICT"), primary_key=True)
+    new_attempt_id: Mapped[str] = mapped_column(Text, ForeignKey("provider_attempts.attempt_id", ondelete="RESTRICT"), nullable=False, unique=True)
+    old_action_id: Mapped[str] = mapped_column(Text, ForeignKey("workflow_actions.action_id", ondelete="RESTRICT"), nullable=False)
+    new_action_id: Mapped[str] = mapped_column(Text, ForeignKey("workflow_actions.action_id", ondelete="RESTRICT"), nullable=False)
+    approval_id: Mapped[str] = mapped_column(Text, ForeignKey("approvals.approval_id", ondelete="RESTRICT"), nullable=False, unique=True)
+    receipt_id: Mapped[str] = mapped_column(Text, ForeignKey("resume_receipts.receipt_id", ondelete="RESTRICT"), nullable=False, unique=True)
+
+    __table_args__ = (
+        CheckConstraint('old_attempt_id <> new_attempt_id', name='different_attempt'),
+    )
+
+
+class DispatchIntent(Base):
+    __tablename__ = "dispatch_intents"
+
+    intent_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(Text, ForeignKey("provider_attempts.attempt_id", ondelete="RESTRICT"), nullable=False, unique=True)
+    receipt_id: Mapped[str] = mapped_column(Text, ForeignKey("resume_receipts.receipt_id", ondelete="RESTRICT"), nullable=False, unique=True)
+    selection_id: Mapped[str] = mapped_column(Text, ForeignKey("workflow_selections.selection_id", ondelete="RESTRICT"), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("status = 'awaiting_episode'", name='status'),
+    )
+
+
+class ResumeEpisode(Base):
+    """Unique replacement scheduling binding; never rewrites the old Job."""
+    __tablename__ = 'resume_episodes'
+    intent_id: Mapped[str] = mapped_column(Text, ForeignKey('dispatch_intents.intent_id', ondelete='RESTRICT'), primary_key=True)
+    attempt_id: Mapped[str] = mapped_column(Text, ForeignKey('provider_attempts.attempt_id', ondelete='RESTRICT'), nullable=False, unique=True)
+    job_id: Mapped[str] = mapped_column(Text, ForeignKey('worker_jobs.job_id', ondelete='RESTRICT'), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class ResumeRevokeReceipt(Base):
+    __tablename__ = 'resume_revoke_receipts'
+    request_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    receipt_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    decision_id: Mapped[str] = mapped_column(Text, ForeignKey('resume_revocations.decision_id', ondelete='RESTRICT'), nullable=False)
+    actor_id: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class ResumeLeaseIssuance(Base):
+    __tablename__ = 'resume_lease_issuances'
+    intent_id: Mapped[str] = mapped_column(Text, ForeignKey('resume_episodes.intent_id', ondelete='RESTRICT'), primary_key=True)
+    job_lease_epoch: Mapped[int] = mapped_column(Integer, primary_key=True)
+    lease_id: Mapped[str] = mapped_column(Text, ForeignKey('leases.lease_id', ondelete='RESTRICT'), nullable=False, unique=True)
+    __table_args__ = (CheckConstraint('job_lease_epoch >= 1', name='positive_epoch'),)
+
+
+class ExecutionJobBinding(Base):
+    __tablename__ = 'execution_job_bindings'
+    attempt_id: Mapped[str] = mapped_column(ForeignKey('provider_attempts.attempt_id', ondelete='RESTRICT'), primary_key=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey('worker_jobs.job_id', ondelete='RESTRICT'), nullable=False, unique=True)
+    selection_id: Mapped[str] = mapped_column(ForeignKey('workflow_selections.selection_id', ondelete='RESTRICT'), nullable=False)
+    snapshot_sha256: Mapped[str] = mapped_column(ForeignKey('execution_snapshots.sha256', ondelete='RESTRICT'), nullable=False)
+    input_binding_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    origin: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    __table_args__ = (
+        CheckConstraint("origin IN ('initial','replacement')", name='origin'),
+        CheckConstraint(_hex_of_length('input_binding_sha256', 64, nullable=False), name='input_digest'),
+    )
+
+
+class ExecutionStartReceipt(Base):
+    __tablename__ = 'execution_start_receipts'
+    request_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    actor: Mapped[str] = mapped_column(Text, nullable=False)
+    action_id: Mapped[str] = mapped_column(ForeignKey('workflow_actions.action_id', ondelete='RESTRICT'), nullable=False, unique=True)
+    selection_id: Mapped[str] = mapped_column(ForeignKey('workflow_selections.selection_id', ondelete='RESTRICT'), nullable=False)
+    binding_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    attempt_id: Mapped[str] = mapped_column(ForeignKey('provider_attempts.attempt_id', ondelete='RESTRICT'), nullable=False, unique=True)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    __table_args__ = (
+        CheckConstraint(_hex_of_length('request_sha256', 64, nullable=False), name='request_digest'),
+        CheckConstraint(_hex_of_length('binding_sha256', 64, nullable=False), name='binding_digest'),
+        CheckConstraint('length(actor) > 0 AND expires_at > recorded_at', name='authority'),
+    )
+
+
+class ExecutionPolicyLeaseIssuance(Base):
+    __tablename__ = 'execution_policy_lease_issuances'
+    attempt_id: Mapped[str] = mapped_column(ForeignKey('provider_attempts.attempt_id', ondelete='RESTRICT'), primary_key=True)
+    job_lease_epoch: Mapped[int] = mapped_column(Integer, primary_key=True)
+    lease_id: Mapped[str] = mapped_column(ForeignKey('leases.lease_id', ondelete='RESTRICT'), nullable=False, unique=True)
+    __table_args__ = (CheckConstraint('job_lease_epoch >= 1', name='positive_epoch'),)
+
+
+class ExecutionResultEnvelope(Base):
+    __tablename__ = 'execution_result_envelopes'
+    attempt_id: Mapped[str] = mapped_column(ForeignKey('provider_attempts.attempt_id', ondelete='RESTRICT'), primary_key=True)
+    result_sha256: Mapped[str] = mapped_column(Text, primary_key=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    __table_args__ = (
+        CheckConstraint(_hex_of_length('result_sha256', 64, nullable=False), name='result_digest'),
+        CheckConstraint('length(body) > 0', name='body_nonempty'),
     )

@@ -152,6 +152,39 @@ if [ ! -e "$BACKUP_MONITOR_START" ]; then
   rm -f "$monitor_tmp"
 fi
 
+# --- DAL Dev Workflow Service (R05+R08 ECS baseline) ---------------------------
+# A separate trust domain from Finance/Agent production: its own nologin user,
+# its own 0700 data directory, its own env file. No Nginx group is granted on
+# anything: the service listens on 127.0.0.1:8820 and Nginx proxies to it over
+# loopback, so there is no shared-socket boundary to manage.
+DAL_USER=personal-agent-dal
+if id "$DAL_USER" >/dev/null 2>&1; then
+  echo "user $DAL_USER already exists"
+else
+  useradd --system --no-create-home --shell /usr/sbin/nologin \
+    --comment "Personal Agent DAL (R08)" "$DAL_USER"
+  echo "created user $DAL_USER"
+fi
+install -d -m 0700 -o "$DAL_USER" -g "$DAL_USER" /var/lib/personal-agent-dal
+# R09-B backup-set extension: staging dir (setgid, group=backup) for the DAL
+# snapshot the backup user reads, and the snapshot script's libexec home. The
+# script imports personal_agent_core, so it runs under the DAL venv.
+install -d -m 2770 -o "$DAL_USER" -g "$BACKUP_USER" /var/backups/personal-agent/dal
+install -d -m 0755 -o root -g root /opt/personal-agent-dal/libexec
+install -m 0755 -o root -g root   "$(cd "$(dirname "$0")" && pwd)/libexec/dal_snapshot.py"   /opt/personal-agent-dal/libexec/dal_snapshot.py
+install -m 0644 -o root -g root "$UNIT_SRC/personal-agent-dal-api.service" /etc/systemd/system/
+# R09-B backup-set extension: the DAL snapshot unit + timer, installed but not
+# enabled (the enablement belongs to the DAL runbook, like every other unit).
+install -m 0644 -o root -g root \
+  "$UNIT_SRC/personal-agent-dal-db-backup.service" \
+  "$UNIT_SRC/personal-agent-dal-db-backup.timer" \
+  "$UNIT_SRC/personal-agent-dal-reconcile.service" \
+  "$UNIT_SRC/personal-agent-dal-reconcile.timer" /etc/systemd/system/
+# Installed but NOT enabled, like every other unit: the env file, key material,
+# database and migration do not exist yet, and enabling now would fail-closed
+# into a restart loop. deploy/README.md (DAL section) owns the enablement.
+systemctl daemon-reload
+
 # --- python runtime -----------------------------------------------------------
 if ! python3 -c 'import sys; assert sys.version_info[:2] == (3, 12)' 2>/dev/null; then
   echo "expected Python 3.12 as the system python3 (Ubuntu 24.04)" >&2
@@ -196,7 +229,6 @@ install -m 0644 -o root -g root \
 install -d -m 0755 -o "$DEPLOY_USER" -g "$DEPLOY_USER" /opt/personal-agent/deploy
 install -m 0755 -o "$DEPLOY_USER" -g "$DEPLOY_USER" \
   "$(cd "$(dirname "$0")" && pwd)/backup.sh" /opt/personal-agent/deploy/backup.sh
-systemctl daemon-reload
 
 echo
 echo "Installed. NOT enabled or started. Next: deploy/README.md steps 3-9"

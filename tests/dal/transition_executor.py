@@ -18,11 +18,12 @@ Test-only module.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from sqlalchemy import Engine, inspect, text
+from sqlalchemy import Engine, inspect, select, text
 
 from personal_agent_core.timeutil import utc_now
 
@@ -263,6 +264,7 @@ def seed_for(engine: Engine, fixture: dict[str, Any]) -> None:
         feature_row,
         lease_row,
         recovery_case_row,
+        state_binding_sha256,
     )
 
     pre = fixture["pre_state"]
@@ -285,14 +287,17 @@ def seed_for(engine: Engine, fixture: dict[str, Any]) -> None:
         # this is a creation fixture, and seeding the row would make the
         # transition under test impossible.
         creating = aggregate_type == "feature" and pre["state"] is None
+        feature = None
         if not creating:
-            session.add(
-                feature_row(
-                    feature_id=feature_id,
-                    version=pre["version"] if aggregate_type == "feature" else 1,
-                    state=pre["state"] if aggregate_type == "feature" else "coding",
-                )
+            feature = feature_row(
+                feature_id=feature_id,
+                version=pre["version"] if aggregate_type == "feature" else 1,
+                state=pre["state"] if aggregate_type == "feature" else "coding",
             )
+            session.add(feature)
+        protected_state_sha256 = (
+            state_binding_sha256(feature) if feature is not None else None
+        )
         if aggregate_type == "recovery_case":
             session.add(
                 recovery_case_row(
@@ -325,10 +330,26 @@ def seed_for(engine: Engine, fixture: dict[str, Any]) -> None:
                 decision_row(
                     feature_id=feature_id,
                     decision_id=f"decision-seeded-{ordinal}-{member}",
+                    state_sha256=protected_state_sha256,
                 )
             )
         if "approval_consume" in writes and "approval_record" not in writes:
-            session.add(approval_row(feature_id=feature_id))
+            decision_id = (
+                "decision-seeded-0-decision_resolve"
+                if "decision_resolve" in decision_members
+                else None
+            )
+            session.add(
+                approval_row(
+                    feature_id=feature_id,
+                    action=spec["requires_decision_action"] or spec["command_type"],
+                    decision_id=decision_id,
+                    decision_version=1 if decision_id is not None else None,
+                    expected_feature_version=feature.version,
+                    expected_state=feature.state,
+                    state_sha256=protected_state_sha256,
+                )
+            )
         if writes & {"capability_consume", "capability_revoke"}:
             session.add(capability_row(feature_id=feature_id))
         if "lease_revoke" in writes:
@@ -361,6 +382,57 @@ def guard_facts_from(fixture: dict[str, Any]) -> GuardFacts:
     return GuardFacts(values)
 
 
+def bind_command_authority(
+    engine: Engine, command: TransitionCommand, spec_id: str | None
+) -> TransitionCommand:
+    """Arrange a current card/approval baseline for non-binding test vectors.
+
+    STATEHASH/ARTIFACTHASH own the drift cases. Other transition vectors still
+    have to present the mandatory observed digest and exact decision identity;
+    this helper derives those inputs from the seeded server projection without
+    weakening the production fail-closed checks.
+    """
+
+    if spec_id is None:
+        return command
+    spec = transition_registry().by_id(spec_id)
+    writes = set(spec["atomic_write_set"])
+    if not writes.intersection({"decision_resolve", "approval_consume"}):
+        return command
+
+    from personal_agent_dal.machine.binding import build_state_binding
+    from personal_agent_dal.machine.registry import jcs_sha256
+    from personal_agent_dal.storage.machine_models import Approval, Decision
+    from personal_agent_dal.storage.models import Feature
+
+    sessions = session_factory(engine)
+    with sessions() as session:
+        feature = session.execute(select(Feature).limit(1)).scalar_one()
+        decision = session.execute(
+            select(Decision)
+            .where(Decision.status == "open")
+            .order_by(Decision.created_at, Decision.decision_id)
+            .limit(1)
+        ).scalar_one_or_none()
+        approval = session.execute(
+            select(Approval)
+            .where(Approval.consumed_by_command_id.is_(None))
+            .order_by(Approval.recorded_at, Approval.approval_id)
+            .limit(1)
+        ).scalar_one_or_none()
+
+    parameters = dict(command.command_parameters)
+    parameters.setdefault(
+        "observed_state_sha256", jcs_sha256(build_state_binding(feature))
+    )
+    if "decision_resolve" in writes and decision is not None:
+        parameters.setdefault("decision_id", decision.decision_id)
+        parameters.setdefault("submitted_decision_version", decision.decision_version)
+    if approval is not None:
+        parameters.setdefault("approval_id", approval.approval_id)
+    return replace(command, command_parameters=parameters)
+
+
 def run_transition_fixture(
     fixture: dict[str, Any], *, database: Path
 ) -> tuple[TransitionOutcome, dict[str, Any], dict[str, Any]]:
@@ -373,6 +445,7 @@ def run_transition_fixture(
     command = TransitionCommand.from_fixture(
         body, idempotency_key=f"idem-{fixture['variant_id']}"
     )
+    command = bind_command_authority(engine, command, fixture.get("coverage_ref"))
     before = snapshot(engine)
     outcome = apply_transition(
         engine, command, facts=guard_facts_from(fixture), now=utc_now()
@@ -399,6 +472,7 @@ def run_scenario_fixture(
     seeding = dict(fixture)
     seeding["coverage_ref"] = spec_id
     seed_for(engine, seeding)
+    command = bind_command_authority(engine, command, spec_id)
 
     before = snapshot(engine)
     outcome = apply_transition(engine, command, facts=facts, now=utc_now())

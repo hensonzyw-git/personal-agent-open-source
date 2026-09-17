@@ -1,0 +1,965 @@
+{
+  "catalog_sha256": "9998edcb7ea88c2e178d9a72a840b164c7d909695d829b8db9e31a3965ac566b",
+  "fixtures": {
+    "dal.routing.fixture/DAL-T-ROUTING-CONTRACT-001/classifier_digest_drift/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "routing-adapter",
+          "idempotency_key": "classifier_digest_drift",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_handoff",
+                "contract_version": "dal.routing-resolution/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_slot": "fallback",
+              "routing_snapshot": {
+                "classifier": {
+                  "model": "GLM/glm-4.5-air",
+                  "provider": "glm"
+                },
+                "fallback": {
+                  "model": "Changhe/glm-5.2",
+                  "provider": "changhe"
+                },
+                "primary": {
+                  "model": "DeepSeek/deepseek-v4-pro",
+                  "provider": "ccr"
+                },
+                "review": {
+                  "model": "Codex/codex-5.6-sol",
+                  "provider": "codex"
+                }
+              },
+              "work_state": {
+                "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+                "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+              }
+            },
+            "injected_results": {
+              "observed_classifier": {
+                "digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "digest_pre": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "model": "GLM/glm-4.5-air",
+                "provider": "glm"
+              },
+              "primary_failure_class": null
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "classifier_digest_drift",
+          "operation_spec_id": "OP-ROUTING-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.routing-fixture/1.0",
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "classifier_digest_drift"
+    },
+    "dal.routing.fixture/DAL-T-ROUTING-CONTRACT-001/classifier_modified/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "routing-adapter",
+          "idempotency_key": "classifier_modified",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_handoff",
+                "contract_version": "dal.routing-resolution/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_slot": "fallback",
+              "routing_snapshot": {
+                "classifier": {
+                  "model": "GLM/glm-4.5-air",
+                  "provider": "glm"
+                },
+                "fallback": {
+                  "model": "Changhe/glm-5.2",
+                  "provider": "changhe"
+                },
+                "primary": {
+                  "model": "DeepSeek/deepseek-v4-pro",
+                  "provider": "ccr"
+                },
+                "review": {
+                  "model": "Codex/codex-5.6-sol",
+                  "provider": "codex"
+                }
+              },
+              "work_state": {
+                "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+                "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+              }
+            },
+            "injected_results": {
+              "observed_classifier": {
+                "digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "digest_pre": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "model": "GLM/glm-4.5-air",
+                "provider": "evil.example.com:443"
+              },
+              "primary_failure_class": null
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "classifier_modified",
+          "operation_spec_id": "OP-ROUTING-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.routing-fixture/1.0",
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "classifier_modified"
+    },
+    "dal.routing.fixture/DAL-T-ROUTING-CONTRACT-001/classifier_replaced/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "routing-adapter",
+          "idempotency_key": "classifier_replaced",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_handoff",
+                "contract_version": "dal.routing-resolution/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_slot": "fallback",
+              "routing_snapshot": {
+                "classifier": {
+                  "model": "GLM/glm-4.5-air",
+                  "provider": "glm"
+                },
+                "fallback": {
+                  "model": "Changhe/glm-5.2",
+                  "provider": "changhe"
+                },
+                "primary": {
+                  "model": "DeepSeek/deepseek-v4-pro",
+                  "provider": "ccr"
+                },
+                "review": {
+                  "model": "Codex/codex-5.6-sol",
+                  "provider": "codex"
+                }
+              },
+              "work_state": {
+                "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+                "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+              }
+            },
+            "injected_results": {
+              "observed_classifier": {
+                "digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "digest_pre": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "model": "DeepSeek/deepseek-v4-flash",
+                "provider": "glm"
+              },
+              "primary_failure_class": null
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "classifier_replaced",
+          "operation_spec_id": "OP-ROUTING-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.routing-fixture/1.0",
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "classifier_replaced"
+    },
+    "dal.routing.fixture/DAL-T-ROUTING-CONTRACT-001/fallback_unconfigured/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "routing-adapter",
+          "idempotency_key": "fallback_unconfigured",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_handoff",
+                "contract_version": "dal.routing-resolution/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_slot": "fallback",
+              "routing_snapshot": {
+                "classifier": {
+                  "model": "GLM/glm-4.5-air",
+                  "provider": "glm"
+                },
+                "primary": {
+                  "model": "DeepSeek/deepseek-v4-pro",
+                  "provider": "ccr"
+                },
+                "review": {
+                  "model": "Codex/codex-5.6-sol",
+                  "provider": "codex"
+                }
+              },
+              "work_state": {
+                "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+                "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+              }
+            },
+            "injected_results": {
+              "observed_classifier": {
+                "digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "digest_pre": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "model": "GLM/glm-4.5-air",
+                "provider": "glm"
+              },
+              "primary_failure_class": null
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "fallback_unconfigured",
+          "operation_spec_id": "OP-ROUTING-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.routing-fixture/1.0",
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "fallback_unconfigured"
+    },
+    "dal.routing.fixture/DAL-T-ROUTING-CONTRACT-001/primary_auth/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "routing-adapter",
+          "idempotency_key": "primary_auth",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_handoff",
+                "contract_version": "dal.routing-resolution/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_slot": "fallback",
+              "routing_snapshot": {
+                "classifier": {
+                  "model": "GLM/glm-4.5-air",
+                  "provider": "glm"
+                },
+                "fallback": {
+                  "model": "Changhe/glm-5.2",
+                  "provider": "changhe"
+                },
+                "primary": {
+                  "model": "DeepSeek/deepseek-v4-pro",
+                  "provider": "ccr"
+                },
+                "review": {
+                  "model": "Codex/codex-5.6-sol",
+                  "provider": "codex"
+                }
+              },
+              "work_state": {
+                "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+                "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+              }
+            },
+            "injected_results": {
+              "observed_classifier": {
+                "digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "digest_pre": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "model": "GLM/glm-4.5-air",
+                "provider": "glm"
+              },
+              "primary_failure_class": "auth"
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "primary_auth",
+          "operation_spec_id": "OP-ROUTING-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.routing-fixture/1.0",
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "primary_auth"
+    },
+    "dal.routing.fixture/DAL-T-ROUTING-CONTRACT-001/primary_budget_limit/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "routing-adapter",
+          "idempotency_key": "primary_budget_limit",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_handoff",
+                "contract_version": "dal.routing-resolution/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_slot": "fallback",
+              "routing_snapshot": {
+                "classifier": {
+                  "model": "GLM/glm-4.5-air",
+                  "provider": "glm"
+                },
+                "fallback": {
+                  "model": "Changhe/glm-5.2",
+                  "provider": "changhe"
+                },
+                "primary": {
+                  "model": "DeepSeek/deepseek-v4-pro",
+                  "provider": "ccr"
+                },
+                "review": {
+                  "model": "Codex/codex-5.6-sol",
+                  "provider": "codex"
+                }
+              },
+              "work_state": {
+                "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+                "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+              }
+            },
+            "injected_results": {
+              "observed_classifier": {
+                "digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "digest_pre": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "model": "GLM/glm-4.5-air",
+                "provider": "glm"
+              },
+              "primary_failure_class": "budget_limit"
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "primary_budget_limit",
+          "operation_spec_id": "OP-ROUTING-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.routing-fixture/1.0",
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "primary_budget_limit"
+    },
+    "dal.routing.fixture/DAL-T-ROUTING-CONTRACT-001/primary_cancelled/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "routing-adapter",
+          "idempotency_key": "primary_cancelled",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_handoff",
+                "contract_version": "dal.routing-resolution/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_slot": "fallback",
+              "routing_snapshot": {
+                "classifier": {
+                  "model": "GLM/glm-4.5-air",
+                  "provider": "glm"
+                },
+                "fallback": {
+                  "model": "Changhe/glm-5.2",
+                  "provider": "changhe"
+                },
+                "primary": {
+                  "model": "DeepSeek/deepseek-v4-pro",
+                  "provider": "ccr"
+                },
+                "review": {
+                  "model": "Codex/codex-5.6-sol",
+                  "provider": "codex"
+                }
+              },
+              "work_state": {
+                "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+                "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+              }
+            },
+            "injected_results": {
+              "observed_classifier": {
+                "digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "digest_pre": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "model": "GLM/glm-4.5-air",
+                "provider": "glm"
+              },
+              "primary_failure_class": null
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "primary_cancelled",
+          "operation_spec_id": "OP-ROUTING-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.routing-fixture/1.0",
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "primary_cancelled"
+    },
+    "dal.routing.fixture/DAL-T-ROUTING-CONTRACT-001/primary_contract_failure/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "routing-adapter",
+          "idempotency_key": "primary_contract_failure",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_handoff",
+                "contract_version": "dal.routing-resolution/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_slot": "fallback",
+              "routing_snapshot": {
+                "classifier": {
+                  "model": "GLM/glm-4.5-air",
+                  "provider": "glm"
+                },
+                "fallback": {
+                  "model": "Changhe/glm-5.2",
+                  "provider": "changhe"
+                },
+                "primary": {
+                  "model": "DeepSeek/deepseek-v4-pro",
+                  "provider": "ccr"
+                },
+                "review": {
+                  "model": "Codex/codex-5.6-sol",
+                  "provider": "codex"
+                }
+              },
+              "work_state": {
+                "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+                "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+              }
+            },
+            "injected_results": {
+              "observed_classifier": {
+                "digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "digest_pre": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "model": "GLM/glm-4.5-air",
+                "provider": "glm"
+              },
+              "primary_failure_class": "contract_failure"
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "primary_contract_failure",
+          "operation_spec_id": "OP-ROUTING-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.routing-fixture/1.0",
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "primary_contract_failure"
+    },
+    "dal.routing.fixture/DAL-T-ROUTING-CONTRACT-001/primary_policy_failure/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "routing-adapter",
+          "idempotency_key": "primary_policy_failure",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_handoff",
+                "contract_version": "dal.routing-resolution/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_slot": "fallback",
+              "routing_snapshot": {
+                "classifier": {
+                  "model": "GLM/glm-4.5-air",
+                  "provider": "glm"
+                },
+                "fallback": {
+                  "model": "Changhe/glm-5.2",
+                  "provider": "changhe"
+                },
+                "primary": {
+                  "model": "DeepSeek/deepseek-v4-pro",
+                  "provider": "ccr"
+                },
+                "review": {
+                  "model": "Codex/codex-5.6-sol",
+                  "provider": "codex"
+                }
+              },
+              "work_state": {
+                "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+                "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+              }
+            },
+            "injected_results": {
+              "observed_classifier": {
+                "digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "digest_pre": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "model": "GLM/glm-4.5-air",
+                "provider": "glm"
+              },
+              "primary_failure_class": "policy_failure"
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "primary_policy_failure",
+          "operation_spec_id": "OP-ROUTING-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.routing-fixture/1.0",
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "primary_policy_failure"
+    },
+    "dal.routing.fixture/DAL-T-ROUTING-CONTRACT-001/primary_task_failure/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "routing-adapter",
+          "idempotency_key": "primary_task_failure",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_handoff",
+                "contract_version": "dal.routing-resolution/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_slot": "fallback",
+              "routing_snapshot": {
+                "classifier": {
+                  "model": "GLM/glm-4.5-air",
+                  "provider": "glm"
+                },
+                "fallback": {
+                  "model": "Changhe/glm-5.2",
+                  "provider": "changhe"
+                },
+                "primary": {
+                  "model": "DeepSeek/deepseek-v4-pro",
+                  "provider": "ccr"
+                },
+                "review": {
+                  "model": "Codex/codex-5.6-sol",
+                  "provider": "codex"
+                }
+              },
+              "work_state": {
+                "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+                "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+              }
+            },
+            "injected_results": {
+              "observed_classifier": {
+                "digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "digest_pre": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "model": "GLM/glm-4.5-air",
+                "provider": "glm"
+              },
+              "primary_failure_class": "task_failure"
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "primary_task_failure",
+          "operation_spec_id": "OP-ROUTING-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.routing-fixture/1.0",
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "primary_task_failure"
+    },
+    "dal.routing.fixture/DAL-T-ROUTING-CONTRACT-001/primary_transient/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "routing-adapter",
+          "idempotency_key": "primary_transient",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_handoff",
+                "contract_version": "dal.routing-resolution/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_slot": "fallback",
+              "routing_snapshot": {
+                "classifier": {
+                  "model": "GLM/glm-4.5-air",
+                  "provider": "glm"
+                },
+                "fallback": {
+                  "model": "Changhe/glm-5.2",
+                  "provider": "changhe"
+                },
+                "primary": {
+                  "model": "DeepSeek/deepseek-v4-pro",
+                  "provider": "ccr"
+                },
+                "review": {
+                  "model": "Codex/codex-5.6-sol",
+                  "provider": "codex"
+                }
+              },
+              "work_state": {
+                "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+                "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+              }
+            },
+            "injected_results": {
+              "observed_classifier": {
+                "digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "digest_pre": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "model": "GLM/glm-4.5-air",
+                "provider": "glm"
+              },
+              "primary_failure_class": "transient"
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "primary_transient",
+          "operation_spec_id": "OP-ROUTING-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.routing-fixture/1.0",
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "primary_transient"
+    },
+    "dal.routing.fixture/DAL-T-ROUTING-CONTRACT-001/primary_usage_limit/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "routing-adapter",
+          "idempotency_key": "primary_usage_limit",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_handoff",
+                "contract_version": "dal.routing-resolution/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_slot": "fallback",
+              "routing_snapshot": {
+                "classifier": {
+                  "model": "GLM/glm-4.5-air",
+                  "provider": "glm"
+                },
+                "fallback": {
+                  "model": "Changhe/glm-5.2",
+                  "provider": "changhe"
+                },
+                "primary": {
+                  "model": "DeepSeek/deepseek-v4-pro",
+                  "provider": "ccr"
+                },
+                "review": {
+                  "model": "Codex/codex-5.6-sol",
+                  "provider": "codex"
+                }
+              },
+              "work_state": {
+                "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+                "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+              }
+            },
+            "injected_results": {
+              "observed_classifier": {
+                "digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "digest_pre": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "model": "GLM/glm-4.5-air",
+                "provider": "glm"
+              },
+              "primary_failure_class": "usage_limit"
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "primary_usage_limit",
+          "operation_spec_id": "OP-ROUTING-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.routing-fixture/1.0",
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "primary_usage_limit"
+    },
+    "dal.routing.fixture/DAL-T-ROUTING-CONTRACT-001/unknown_slot_request/G3/1.0": {
+      "operation_sequence": [
+        {
+          "actor_type": "service",
+          "evidence_source_type": "routing-adapter",
+          "idempotency_key": "unknown_slot_request",
+          "input": {
+            "action_sequence": [
+              {
+                "command": "consume_handoff",
+                "contract_version": "dal.routing-resolution/1.0"
+              }
+            ],
+            "authoritative_facts": {
+              "classifier_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "requested_slot": "hack",
+              "routing_snapshot": {
+                "classifier": {
+                  "model": "GLM/glm-4.5-air",
+                  "provider": "glm"
+                },
+                "fallback": {
+                  "model": "Changhe/glm-5.2",
+                  "provider": "changhe"
+                },
+                "primary": {
+                  "model": "DeepSeek/deepseek-v4-pro",
+                  "provider": "ccr"
+                },
+                "review": {
+                  "model": "Codex/codex-5.6-sol",
+                  "provider": "codex"
+                }
+              },
+              "work_state": {
+                "base_sha": "0123456789abcdef0123456789abcdef01234567",
+                "diff_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "last_verified_sha": "fedcba9876543210fedcba9876543210fedcba98",
+                "tests_receipt": "dal.transition-receipt/1.0:receipt-7"
+              }
+            },
+            "injected_results": {
+              "observed_classifier": {
+                "digest_post": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "digest_pre": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "model": "GLM/glm-4.5-air",
+                "provider": "glm"
+              },
+              "primary_failure_class": null
+            },
+            "schema_version": "dal.operation-input/1.0",
+            "target": {
+              "entity_id": "fixture-entity",
+              "entity_type": "feature",
+              "state": "coding",
+              "version": 7
+            }
+          },
+          "operation_id": "unknown_slot_request",
+          "operation_spec_id": "OP-ROUTING-CONTRACT-001",
+          "schema_version": "dal.test-operation-command/1.0"
+        }
+      ],
+      "pre_state": {
+        "entity_id": "fixture-entity",
+        "entity_type": "feature",
+        "state": "coding",
+        "version": 7
+      },
+      "run_gate": "G3",
+      "schema_version": "dal.routing-fixture/1.0",
+      "test_id": "DAL-T-ROUTING-CONTRACT-001",
+      "variant_id": "unknown_slot_request"
+    }
+  },
+  "registry_sha256": "2806ee32b9398377dc3d6fcf52b6a582fdedba8c8d7675fe20a11bcb76ad82d1",
+  "schema_version": "dal.routing-fixture-catalog/1.0"
+}

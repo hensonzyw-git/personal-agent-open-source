@@ -27,6 +27,7 @@ Four properties are load-bearing:
 from __future__ import annotations
 
 import hashlib
+import hmac
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable, Final
@@ -36,15 +37,25 @@ from sqlalchemy.orm import Session
 
 from personal_agent_core.ids import new_id
 from personal_agent_core.manifest import canonical_json
+from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_core.timeutil import utc_now
 
 from personal_agent_dal.errors import DalError, DalErrorCode
+from personal_agent_dal.machine.binding import (
+    ArtifactReader,
+    build_state_binding,
+    validate_artifact_binding,
+    validate_state_binding,
+)
 from personal_agent_dal.machine.guards import GuardFacts, evaluate_guard
 from personal_agent_dal.machine.registry import (
     ResolutionKey,
+    TransitionRegistry,
     guard_registry,
+    jcs_sha256,
     transition_registry,
 )
+from personal_agent_dal.machine.transition_types import ReceiptCodes, TransitionRefused
 from personal_agent_dal.storage.audit import append_audit_event
 from personal_agent_dal.storage.engine import session_factory
 from personal_agent_dal.storage.machine_models import (
@@ -97,26 +108,6 @@ _AGGREGATE_PK: Final[dict[str, str]] = {
     "recovery_case": "recovery_case_id",
     "external_effect": "effect_id",
 }
-
-
-class ReceiptCodes:
-    """Transition receipt codes. Only `APPLIED` is ever persisted."""
-
-    APPLIED: Final[str] = "APPLIED"
-    POLICY_DENIED: Final[str] = "POLICY_DENIED"
-    ILLEGAL_TRANSITION: Final[str] = "ILLEGAL_TRANSITION"
-    TERMINAL_STATE: Final[str] = "TERMINAL_STATE"
-    VERSION_CONFLICT: Final[str] = "VERSION_CONFLICT"
-    IDEMPOTENCY_CONFLICT: Final[str] = "IDEMPOTENCY_CONFLICT"
-    #: An approval is invalid for consumption: already consumed, revoked, or
-    #: expired. Distinct from POLICY_DENIED (an actor/evidence refusal) so a
-    #: replay or audit can tell "the approval was bad" from "the caller was
-    #: not allowed to ask".
-    APPROVAL_INVALID: Final[str] = "APPROVAL_INVALID"
-    #: The decision the command names is stale: its version does not match
-    #: the server's current version, or it has expired. The approval may be
-    #: valid, but acting on a stale decision would bind the wrong state.
-    DECISION_STALE: Final[str] = "DECISION_STALE"
 
 
 @dataclass(frozen=True)
@@ -174,18 +165,12 @@ class TransitionOutcome:
     reason_code: str | None
     reason_owner: str | None
     spec_id: str | None
+    #: Which evidence-validation boundary produced this outcome. This is a
+    #: closed diagnostic label, never free-form provider or evidence content.
+    evidence_validation_stage: str | None = None
     #: True when nothing was applied because this exact command was already
     #: applied before (§2.6): the receipt is the original one.
     duplicate: bool = False
-
-
-class TransitionRefused(Exception):
-    """A refusal carrying the receipt code to report. Never partially applied."""
-
-    def __init__(self, code: str, detail: str) -> None:
-        self.code = code
-        self.detail = detail
-        super().__init__(f"{code}: {detail}")
 
 
 @dataclass
@@ -201,6 +186,7 @@ class ApplyContext:
     aggregate_version: int
     now: datetime
     request_payload_sha256: str
+    artifact_reader: ArtifactReader | None = None
     event_id: str = field(default_factory=new_id)
     scratch: dict[str, Any] = field(default_factory=dict)
 
@@ -285,33 +271,50 @@ def _owner_feature_id(ctx: ApplyContext) -> str:
     decision that authorises it, the approval it consumes and the capabilities
     it revokes all belong to the feature the case was opened for. Looking them
     up by the recovery case's id would find nothing and refuse a legitimate
-    command.
+    command. The same holds for an external effect owned through a recovery
+    case (round-4 finding R4-2): its `owner_aggregate_id` names the case, so
+    the feature behind the case is the owner — otherwise any EE-* edge with
+    a `decision_create` member crashes the engine on a missing feature row
+    instead of resolving it.
     """
-    if ctx.spec["aggregate_type"] == "feature":
+    if ctx.command.aggregate_type == "feature":
         return ctx.aggregate_id
     cached = ctx.scratch.get("owner_feature_id")
     if cached is not None:
         return cached
-    if ctx.spec["aggregate_type"] == "recovery_case":
+    feature_id: str | None
+    if ctx.command.aggregate_type == "recovery_case":
         table = RecoveryCase.__table__
-        owner = ctx.session.execute(
+        feature_id = ctx.session.execute(
             select(table.c.feature_id).where(
                 table.c.recovery_case_id == ctx.aggregate_id
             )
         ).scalar_one_or_none()
     else:
         table = ExternalEffect.__table__
-        owner = ctx.session.execute(
-            select(table.c.owner_aggregate_id).where(
-                table.c.effect_id == ctx.aggregate_id
-            )
-        ).scalar_one_or_none()
-    if owner is None:
+        row = ctx.session.execute(
+            select(
+                table.c.owner_aggregate_id,
+                table.c.owner_aggregate_type,
+            ).where(table.c.effect_id == ctx.aggregate_id)
+        ).first()
+        if row is None:
+            feature_id = None
+        elif row[1] == "recovery_case":
+            case_table = RecoveryCase.__table__
+            feature_id = ctx.session.execute(
+                select(case_table.c.feature_id).where(
+                    case_table.c.recovery_case_id == row[0]
+                )
+            ).scalar_one_or_none()
+        else:
+            feature_id = row[0]
+    if feature_id is None:
         raise TransitionRefused(
             ReceiptCodes.ILLEGAL_TRANSITION, "aggregate has no owning feature"
         )
-    ctx.scratch["owner_feature_id"] = owner
-    return owner
+    ctx.scratch["owner_feature_id"] = feature_id
+    return feature_id
 
 
 def _companion_for(ctx: ApplyContext, aggregate_type: str) -> dict[str, Any] | None:
@@ -413,17 +416,32 @@ def _w_notification_outbox(ctx: ApplyContext) -> None:
 
 
 def _new_decision(ctx: ApplyContext, *, incident: bool) -> Decision:
+    decision_id = new_id()
+    feature = ctx.session.execute(
+        select(Feature).where(Feature.feature_id == _owner_feature_id(ctx))
+    ).scalar_one()
+    state_sha256 = jcs_sha256(build_state_binding(feature))
     decision = Decision(
-        decision_id=new_id(),
+        decision_id=decision_id,
         feature_id=_owner_feature_id(ctx),
         decision_version=1,
         action=ctx.spec["requires_decision_action"],
         reason_code=ctx.spec["result_reason_code"],
         status="open",
         priority=0 if incident else 4,
-        artifact_sha256=None,
-        state_sha256=None,
+        artifact_sha256=feature.artifact_sha256,
+        state_sha256=state_sha256,
         is_incident=incident,
+        root_id=decision_id,
+        safety_or_irreversible=incident,
+        blocking_scope="global" if incident else "none",
+        depends_on_json="[]",
+        expires_at=ctx.now + timedelta(minutes=15),
+        superseded_by=None,
+        # §3.5.2: notification priority is independent of dock_rank. An
+        # incident decision is safety_or_irreversible (or globally blocking),
+        # so it is `immediate`; a normal decision batches.
+        notification_priority="immediate" if incident else "normal",
         created_at=ctx.now,
         updated_at=ctx.now,
     )
@@ -462,6 +480,84 @@ def _open_decision(ctx: ApplyContext) -> Decision:
     return ctx.session.get(Decision, decision_id)
 
 
+def _decision_for_action(ctx: ApplyContext) -> Decision:
+    """Resolve the exact client-observed decision, never an arbitrary open row."""
+
+    decision_id = ctx.command.command_parameters.get("decision_id")
+    submitted_version = ctx.command.command_parameters.get(
+        "submitted_decision_version"
+    )
+    if not isinstance(decision_id, str) or not decision_id:
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE, "decision identity is required"
+        )
+    if not isinstance(submitted_version, int) or isinstance(submitted_version, bool):
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE, "decision version is required"
+        )
+    decision = ctx.session.execute(
+        select(Decision).where(
+            Decision.decision_id == decision_id,
+            Decision.feature_id == _owner_feature_id(ctx),
+        )
+    ).scalar_one_or_none()
+    if decision is None or decision.status != "open":
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE, "decision is not the current open decision"
+        )
+    if decision.decision_version != submitted_version:
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE,
+            f"decision version {decision.decision_version} != "
+            f"submitted {submitted_version}",
+        )
+    return decision
+
+
+def _decision_for_token_gate(ctx: ApplyContext) -> Decision:
+    """Validate the named decision's identity, version and expiry for the
+    approval token gate — without the open-status check.
+
+    The status check is deferred to `_w_decision_resolve`: in a same-approval
+    race the winner resolves the decision, so a loser that checked status here
+    would surface as ``DECISION_STALE`` instead of the ``APPROVAL_INVALID`` the
+    approval CAS must report (§3.3). Version and expiry are content- and
+    time-bound, not lifecycle-bound, so they stay ahead of the approval CAS:
+    a stale or expired decision is refused before the approval is consumed.
+    """
+    decision_id = ctx.command.command_parameters.get("decision_id")
+    submitted_version = ctx.command.command_parameters.get(
+        "submitted_decision_version"
+    )
+    if not isinstance(decision_id, str) or not decision_id:
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE, "decision identity is required"
+        )
+    if not isinstance(submitted_version, int) or isinstance(submitted_version, bool):
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE, "decision version is required"
+        )
+    decision = ctx.session.execute(
+        select(Decision).where(
+            Decision.decision_id == decision_id,
+            Decision.feature_id == _owner_feature_id(ctx),
+        )
+    ).scalar_one_or_none()
+    if decision is None:
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE, "decision not found for this feature"
+        )
+    if decision.decision_version != submitted_version:
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE,
+            f"decision version {decision.decision_version} != "
+            f"submitted {submitted_version}",
+        )
+    if decision.expires_at is not None and ctx.now >= decision.expires_at:
+        raise TransitionRefused(ReceiptCodes.DECISION_STALE, "decision has expired")
+    return decision
+
+
 def _set_decision_status(ctx: ApplyContext, status: str) -> None:
     decision = _open_decision(ctx)
     decision.status = status
@@ -471,33 +567,13 @@ def _set_decision_status(ctx: ApplyContext, status: str) -> None:
 
 
 def _w_decision_resolve(ctx: ApplyContext) -> None:
-    # §3.3: a decision whose version does not match the server's current
-    # version is stale — acting on it would bind the wrong state. The command
-    # may carry `submitted_decision_version` in its parameters; if it does
-    # not match the open decision's version, refuse before writing.
-    submitted_version = ctx.command.command_parameters.get("submitted_decision_version")
-    if submitted_version is not None:
-        decision = _open_decision(ctx)
-        if decision.decision_version != submitted_version:
-            raise TransitionRefused(
-                ReceiptCodes.DECISION_STALE,
-                f"decision version {decision.decision_version} != "
-                f"submitted {submitted_version}",
-            )
-    # A decision whose expiry has passed is also stale. The Decision row has
-    # no expires_at column (expiry is a server-held fact the trusted resolver
-    # carries), so the command may carry `decision_expires_at`; if the
-    # operation's `now` is past it, refuse before writing.
-    decision_expires = ctx.command.command_parameters.get("decision_expires_at")
-    if decision_expires is not None:
-        from personal_agent_core.timeutil import parse_rfc3339
-        expires_at = parse_rfc3339(decision_expires)
-        if ctx.now > expires_at:
-            raise TransitionRefused(
-                ReceiptCodes.DECISION_STALE,
-                "decision has expired",
-            )
-    _set_decision_status(ctx, "resolved")
+    decision = _decision_for_action(ctx)
+    if decision.expires_at is not None and ctx.now >= decision.expires_at:
+        raise TransitionRefused(ReceiptCodes.DECISION_STALE, "decision has expired")
+    decision.status = "resolved"
+    decision.updated_at = ctx.now
+    ctx.scratch["decision_id"] = decision.decision_id
+    ctx.session.flush()
 
 
 def _w_decision_consume(ctx: ApplyContext) -> None:
@@ -512,17 +588,32 @@ def _w_decision_projection(ctx: ApplyContext) -> None:
     decision_id = ctx.scratch.get("decision_id")
     if decision_id is None:
         decision_id = _open_decision(ctx).decision_id
-    ctx.session.add(
-        DecisionCardProjection(
-            projection_id=new_id(),
-            decision_id=decision_id,
-            decision_version=1,
-            actionable=ctx.spec["requires_decision_action"] is not None,
-            display_state=ctx.to_state,
-            dock_rank=4,
-            created_at=ctx.now,
+    decision = ctx.session.get(Decision, decision_id)
+    projection = ctx.session.execute(
+        select(DecisionCardProjection).where(
+            DecisionCardProjection.decision_id == decision_id,
+            DecisionCardProjection.decision_version == decision.decision_version,
         )
-    )
+    ).scalar_one_or_none()
+    actionable = decision.status == "open"
+    if projection is None:
+        ctx.session.add(
+            DecisionCardProjection(
+                projection_id=new_id(),
+                decision_id=decision_id,
+                decision_version=decision.decision_version,
+                projection_version=1,
+                actionable=actionable,
+                display_state=ctx.to_state,
+                dock_rank=4,
+                created_at=ctx.now,
+            )
+        )
+        return
+    projection.projection_version += 1
+    projection.actionable = actionable
+    projection.display_state = ctx.to_state
+    ctx.session.flush()
 
 
 def _w_decision_action_receipt(ctx: ApplyContext) -> None:
@@ -552,16 +643,17 @@ def _w_approval_record(ctx: ApplyContext) -> None:
     if named is not None:
         ctx.scratch["approval_id"] = named
         return
+    decision = ctx.session.get(Decision, ctx.scratch.get("decision_id"))
     approval = Approval(
         approval_id=new_id(),
         action=ctx.spec["requires_decision_action"] or ctx.command.command_type,
         feature_id=_owner_feature_id(ctx),
-        decision_id=ctx.scratch.get("decision_id"),
-        decision_version=1,
+        decision_id=decision.decision_id if decision is not None else None,
+        decision_version=decision.decision_version if decision is not None else None,
         expected_feature_version=ctx.command.expected_version,
         expected_state=ctx.from_state,
-        state_sha256=None,
-        artifact_sha256=None,
+        state_sha256=ctx.scratch["bound_state_sha256"],
+        artifact_sha256=ctx.scratch.get("bound_artifact_sha256"),
         device_id="registered-device",
         subject_id="single-user",
         valid_from=ctx.now,
@@ -586,6 +678,11 @@ def _w_approval_consume(ctx: ApplyContext) -> None:
     is bad. An already-consumed approval is the same — a concurrent consumer
     won the race.
     """
+    if ctx.scratch.get("_approval_consumed"):
+        # The approval token gate already consumed the named approval before
+        # the write set ran (§3.3). Re-running this CAS would find the row's
+        # `consumed_by_command_id` set and refuse the winner.
+        return
     table = Approval.__table__
     approval_id = ctx.scratch.get("approval_id")
     # The command may name a specific approval to consume; otherwise the
@@ -628,7 +725,6 @@ def _w_approval_consume(ctx: ApplyContext) -> None:
             raise TransitionRefused(
                 ReceiptCodes.APPROVAL_INVALID, "approval was already consumed"
             )
-
     result = ctx.session.execute(
         update(table)
         .where(table.c.approval_id == approval_id)
@@ -642,6 +738,245 @@ def _w_approval_consume(ctx: ApplyContext) -> None:
             ReceiptCodes.APPROVAL_INVALID, "approval was already consumed"
         )
     ctx.scratch["approval_id"] = approval_id
+
+
+def _approval_for_binding(ctx: ApplyContext) -> Approval:
+    """Resolve the named approval whose binding must be validated, by id only.
+
+    Deliberately does *not* filter on ``consumed_by_command_id IS NULL``: the
+    approval token gate consumes the approval before the write set runs, so by
+    the time the bound-authority check reads it the row is already consumed.
+    Consumption is arbitrated by the approval CAS, not by this lookup; the
+    fields this check reads (``state_sha256``, ``artifact_sha256``) are
+    immutable, so reading a just-consumed row is correct.
+    """
+    table = Approval.__table__
+    approval_id = ctx.command.command_parameters.get("approval_id")
+    query = select(Approval).where(table.c.feature_id == _owner_feature_id(ctx))
+    if approval_id is not None:
+        query = query.where(table.c.approval_id == approval_id)
+    else:
+        query = query.where(
+            table.c.consumed_by_command_id.is_(None)
+        ).order_by(table.c.recorded_at).limit(1)
+    approval = ctx.session.execute(query).scalar_one_or_none()
+    if approval is None:
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID, "no approval to validate"
+        )
+    return approval
+
+
+def _resolution_key(command: TransitionCommand, from_state: str | None) -> ResolutionKey:
+    parameters = command.command_parameters
+    return ResolutionKey(
+        aggregate_type=command.aggregate_type,
+        from_state=from_state,
+        command_type=command.command_type,
+        target_state=parameters.get("target_state"),
+        effect_outcome=parameters.get("effect_outcome"),
+        owner_aggregate_type=parameters.get("owner_aggregate_type"),
+        decision_action=command.decision_action,
+        reason_code=command.reason_code,
+    )
+
+
+def _apply_approval_token_gate(
+    ctx: ApplyContext, registry: TransitionRegistry
+) -> None:
+    """Validate and consume a named approval before version arbitration.
+
+    This is the §3.3 same-approval arbitration point. The approval consume CAS
+    runs before the aggregate version check, so a same-approval loser reaches
+    this CAS even after the winner moved the aggregate. The command shape is
+    first checked against the frozen registry *without* using current state:
+    arbitrary commands carrying an extra approval id may not consume it.
+    Different-approval competition proceeds past this gate and is then refused
+    by the version check before exact current-state spec resolution (§2.6).
+
+    The decision is validated first (version and expiry, not lifecycle): a
+    stale or expired decision is refused with ``DECISION_STALE`` before the
+    approval is consumed, so a refused command leaves the approval untouched.
+    """
+    approval_id = ctx.command.command_parameters.get("approval_id")
+    if approval_id is None:
+        # No named approval to arbitrate. Unnamed approvals are created and
+        # consumed inside the write set, where the token gate does not apply.
+        return
+
+    candidates = registry.resolve_command_shape(_resolution_key(ctx.command, None))
+    if not candidates or any(
+        "approval_consume" not in set(candidate["atomic_write_set"])
+        for candidate in candidates
+    ):
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID,
+            "the submitted command shape is not approval-consuming",
+        )
+
+    expected_actions = {
+        candidate["requires_decision_action"] or candidate["command_type"]
+        for candidate in candidates
+    }
+    if len(expected_actions) != 1:
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID,
+            "the submitted command shape has ambiguous approval authority",
+        )
+
+    approval = ctx.session.execute(
+        select(Approval).where(
+            Approval.approval_id == approval_id,
+            Approval.feature_id == _owner_feature_id(ctx),
+        )
+    ).scalar_one_or_none()
+    if approval is None:
+        raise TransitionRefused(ReceiptCodes.APPROVAL_INVALID, "approval not found")
+    if approval.action != next(iter(expected_actions)):
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID,
+            "approval action does not match the submitted command",
+        )
+    if approval.policy_version != POLICY_VERSION:
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID, "approval policy version is stale"
+        )
+    if ctx.now < approval.valid_from or ctx.now >= approval.expires_at:
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID, "approval is not currently valid"
+        )
+
+    decision_id = ctx.command.command_parameters.get("decision_id")
+    if decision_id is not None:
+        decision = _decision_for_token_gate(ctx)
+        if (
+            approval.decision_id != decision.decision_id
+            or approval.decision_version != decision.decision_version
+        ):
+            raise TransitionRefused(
+                ReceiptCodes.DECISION_STALE,
+                "approval is not bound to the submitted decision version",
+            )
+    elif approval.decision_id is not None:
+        raise TransitionRefused(
+            ReceiptCodes.DECISION_STALE,
+            "approval requires its bound decision identity",
+        )
+
+    table = Approval.__table__
+    result = ctx.session.execute(
+        update(table)
+        .where(table.c.approval_id == approval_id)
+        .where(table.c.feature_id == _owner_feature_id(ctx))
+        .where(table.c.consumed_by_command_id.is_(None))
+        .where(table.c.valid_from <= ctx.now)
+        .where(table.c.expires_at > ctx.now)
+        .where(table.c.policy_version == POLICY_VERSION)
+        .values(
+            consumed_by_command_id=ctx.command.idempotency_key,
+            consumed_at=ctx.now,
+        )
+    )
+    if result.rowcount != 1:
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID,
+            "approval was already consumed or has expired",
+        )
+    ctx.scratch["approval_id"] = approval_id
+    ctx.scratch["_approval_consumed"] = True
+
+
+def _validate_bound_authority(ctx: ApplyContext, declared: set[str]) -> None:
+    """Recompute state/artifact authority before any transition write occurs."""
+
+    if not declared.intersection({"decision_resolve", "approval_consume"}):
+        return
+
+    feature = ctx.session.execute(
+        select(Feature).where(Feature.feature_id == _owner_feature_id(ctx))
+    ).scalar_one()
+    current_state_binding = build_state_binding(feature)
+    current_state_sha256 = jcs_sha256(current_state_binding)
+    ctx.scratch["bound_state_sha256"] = current_state_sha256
+    ctx.scratch["bound_artifact_sha256"] = feature.artifact_sha256
+    observed_state_sha256 = ctx.command.command_parameters.get(
+        "observed_state_sha256"
+    )
+
+    if "decision_resolve" in declared:
+        decision = _decision_for_action(ctx)
+        if decision.state_sha256 is None:
+            raise TransitionRefused(
+                ReceiptCodes.DECISION_STALE,
+                "decision has no protected state binding",
+            )
+        validate_state_binding(
+            current_binding=current_state_binding,
+            protected_binding_sha256=decision.state_sha256,
+            observed_binding_sha256=observed_state_sha256,
+        )
+
+    if "approval_consume" not in declared:
+        return
+    approval_id = ctx.command.command_parameters.get("approval_id")
+    approval = _approval_for_binding(ctx) if approval_id is not None else None
+    if approval is None:
+        # This command carries the human approval that will be recorded and
+        # consumed in the same transaction. Bind that new row to the exact
+        # pre-transition state the device observed.
+        validate_state_binding(
+            current_binding=current_state_binding,
+            protected_binding_sha256=current_state_sha256,
+            observed_binding_sha256=observed_state_sha256,
+        )
+    else:
+        if approval.state_sha256 is None:
+            raise TransitionRefused(
+                ReceiptCodes.APPROVAL_INVALID,
+                "approval has no protected state binding",
+            )
+        validate_state_binding(
+            current_binding=current_state_binding,
+            protected_binding_sha256=approval.state_sha256,
+            observed_binding_sha256=observed_state_sha256,
+        )
+
+    current_artifact_sha256 = feature.artifact_sha256
+    protected_artifact_sha256 = (
+        approval.artifact_sha256 if approval is not None else current_artifact_sha256
+    )
+    if current_artifact_sha256 is None and protected_artifact_sha256 is None:
+        return
+    if (
+        current_artifact_sha256 is None
+        or protected_artifact_sha256 is None
+        or not hmac.compare_digest(
+            current_artifact_sha256, protected_artifact_sha256
+        )
+    ):
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID,
+            "approval artifact digest is not current",
+        )
+    if ctx.artifact_reader is None:
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID,
+            "protected artifact reader is unavailable",
+        )
+    try:
+        artifact = ctx.artifact_reader(protected_artifact_sha256)
+    except Exception as error:
+        raise TransitionRefused(
+            ReceiptCodes.APPROVAL_INVALID,
+            f"protected artifact read failed: {type(error).__name__}",
+        ) from None
+    validate_artifact_binding(
+        current_artifact=artifact,
+        protected_binding_sha256=protected_artifact_sha256,
+        observed_binding_sha256=ctx.command.command_parameters.get(
+            "observed_artifact_sha256"
+        ),
+    )
 
 
 def _w_approval_action_receipt(ctx: ApplyContext) -> None:
@@ -972,11 +1307,53 @@ def _w_dispatch_marker(ctx: ApplyContext) -> None:
 
 
 def _w_reconciler_claim(ctx: ApplyContext) -> None:
-    """A single reconciler, so two cannot both decide an unknown outcome."""
+    """A single reconciler, so two cannot both decide an unknown outcome.
+
+    The claim stamps ``claim_expires_at`` like the dispatch-side claims
+    (``_w_executor_claim`` / ``_w_dispatch_marker``): a process that dies after
+    committing ``reconciling`` leaves an expiry the recovery sweep can reclaim
+    on — without it the row was invisible to every automatic path (F2,
+    2026-09-07 review). Fifteen minutes matches the dispatch window: long
+    enough for a read-back against a slow GitHub, short enough that a crashed
+    reconciler does not park the effect for a day.
+
+    It also stamps ``reconciliation_arbitration_id`` with the reconciliation
+    ROOT — the effect's own feature id for a feature-owned effect, the parent
+    feature id for a recovery-case-owned one — which the partial unique index
+    arbitrates on. The direct owner id could not express the cross pair (a
+    feature claim live while a case claim of the same feature starts), and
+    round 2 proved even a serial interleaving took both (finding 4).
+    """
     effect = _effect_under_command(ctx)
     effect.executor_id = "reconciler"
     effect.executor_epoch = (effect.executor_epoch or 0) + 1
+    effect.claim_expires_at = ctx.now + timedelta(minutes=15)
+    effect.reconciliation_arbitration_id = _reconciliation_root_id(ctx, effect)
     ctx.session.flush()
+
+
+def _reconciliation_root_id(ctx: ApplyContext, effect: ExternalEffect) -> str:
+    """The arbitration root of an effect's owner: its feature id.
+
+    A feature-owned effect arbitrates on itself; a recovery-case-owned effect
+    arbitrates on the case's parent feature — the same closed enumeration
+    SINGLE_RECONCILER_CLAIM walks, expressed as one column value so the
+    partial unique index can enforce it including the cross pair.
+    """
+    if effect.owner_aggregate_type == "feature":
+        return effect.owner_aggregate_id
+    parent = ctx.session.execute(
+        select(RecoveryCase.feature_id).where(
+            RecoveryCase.recovery_case_id == effect.owner_aggregate_id
+        )
+    ).scalar_one_or_none()
+    if parent is None:
+        raise TransitionRefused(
+            ReceiptCodes.POLICY_DENIED,
+            f"recovery case {effect.owner_aggregate_id} does not exist; "
+            "the reconciliation root cannot be derived",
+        )
+    return parent
 
 
 def _w_external_effect_intent(ctx: ApplyContext) -> None:
@@ -1475,6 +1852,7 @@ def _validate_evidence_documents(command: TransitionCommand) -> None:
                     ReceiptCodes.POLICY_DENIED,
                     f"evidence schema validation failed: "
                     f"{field} is null/empty/whitespace",
+                    validation_stage="schema",
                 )
         if effect_outcome == "confirmed_completed":
             receipt_id = doc.get("authoritative_receipt_id")
@@ -1483,29 +1861,43 @@ def _validate_evidence_documents(command: TransitionCommand) -> None:
                     ReceiptCodes.POLICY_DENIED,
                     "evidence schema validation failed: "
                     "authoritative_receipt_id is null for confirmed_completed",
+                    validation_stage="schema",
                 )
             if not receipt_id.strip():
                 raise TransitionRefused(
                     ReceiptCodes.POLICY_DENIED,
                     "evidence schema validation failed: "
                     "authoritative_receipt_id is empty/whitespace",
+                    validation_stage="schema",
                 )
             if receipt_id != receipt_id.strip():
                 raise TransitionRefused(
                     ReceiptCodes.POLICY_DENIED,
                     "evidence schema validation failed: "
                     "authoritative_receipt_id has leading/trailing whitespace",
+                    validation_stage="schema",
                 )
 
 
-def _check_guard(spec: dict[str, Any], facts: GuardFacts) -> None:
+def _check_guard(
+    spec: dict[str, Any], facts: GuardFacts, *, evidence_validation: bool
+) -> None:
     guard_id = spec["guard_id"]
     if guard_id is None:
         return
     outcome = evaluate_guard(guard_registry().by_id(guard_id), facts)
     if not outcome.passed:
+        stage = None
+        if evidence_validation:
+            stage = (
+                "cross_source_consistency"
+                if (outcome.failed_clause or "").startswith("evidence_set.")
+                else "semantic_guard"
+            )
         raise TransitionRefused(
-            ReceiptCodes.POLICY_DENIED, f"guard {guard_id}: {outcome.failed_clause}"
+            ReceiptCodes.POLICY_DENIED,
+            f"guard {guard_id}: {outcome.failed_clause}",
+            validation_stage=stage,
         )
 
 
@@ -1515,8 +1907,14 @@ def apply_transition(
     *,
     facts: GuardFacts | None = None,
     now: datetime | None = None,
+    artifact_reader: ArtifactReader | None = None,
+    transaction_session: Session | None = None,
 ) -> TransitionOutcome:
-    """Resolve, validate and apply one transition, or refuse without writing."""
+    """Resolve and apply a transition.
+
+    With transaction_session, use a savepoint and leave commit/retry to the
+    caller so an action consumption marker can share the durable transaction.
+    """
     now = now or utc_now()
     facts = facts or GuardFacts({})
     registry = transition_registry()
@@ -1536,123 +1934,160 @@ def apply_transition(
     sessions = session_factory(engine)
     spec: dict[str, Any] | None = None
     from_state = ""
+
+    def _apply_body(session: Session) -> TransitionOutcome:
+        nonlocal spec, from_state
+
+        current = _read_aggregate(
+            session, command.aggregate_type, command.aggregate_id
+        )
+        if current is None:
+            # No row yet. That is the `none` pseudo-state the registry
+            # spells as `from_state: null`, and only a creation spec can
+            # match it -- anything else falls through to
+            # ILLEGAL_TRANSITION when resolution fails.
+            from_state, current_version, checkpoint = None, None, None
+        else:
+            from_state, current_version, checkpoint = current
+
+        # Terminal first: no spec may provide an exit, so the registry is
+        # not even consulted.
+        if from_state in TERMINAL_STATES.get(command.aggregate_type, frozenset()):
+            raise TransitionRefused(
+                ReceiptCodes.TERMINAL_STATE,
+                f"{command.aggregate_type} is {from_state}",
+            )
+
+        replayed = session.execute(
+            select(
+                TransitionReceipt.__table__.c.request_payload_sha256,
+                TransitionReceipt.__table__.c.from_state,
+                TransitionReceipt.__table__.c.to_state,
+                TransitionReceipt.__table__.c.spec_id,
+                TransitionReceipt.__table__.c.receipt_schema_version,
+            ).where(
+                TransitionReceipt.__table__.c.idempotency_key
+                == command.idempotency_key
+            )
+        ).first()
+        if replayed is not None:
+            if replayed[0] != request_digest:
+                raise TransitionRefused(
+                    ReceiptCodes.IDEMPOTENCY_CONFLICT,
+                    "command key reused with different content",
+                )
+            # §2.6: a replay returns the *original* receipt, not the
+            # aggregate's current state -- a later transition may have
+            # moved it, and answering with "now" would erase what this
+            # command actually did.
+            raise _Replay(
+                from_state=replayed[1],
+                to_state=replayed[2],
+                spec_id=replayed[3],
+                receipt_schema=replayed[4],
+            )
+
+        # The approval token gate runs before spec resolution and the version
+        # check: a same-approval race is arbitrated by the approval CAS, which
+        # must stay reachable on a snapshot-conflict retry even after the
+        # winner has moved the aggregate's state (§3.3). It touches only
+        # `command`, `session` and `scratch`, so it needs no resolved spec.
+        ctx = ApplyContext(
+            session=session,
+            spec={},
+            command=command,
+            aggregate_id=command.aggregate_id,
+            from_state=from_state,
+            to_state="",
+            aggregate_version=current_version,
+            now=now,
+            request_payload_sha256=request_digest,
+            artifact_reader=artifact_reader,
+        )
+        ctx.scratch["existing_checkpoint"] = checkpoint
+        _apply_approval_token_gate(ctx, registry)
+
+        # Same approval loses at the token CAS above. A different approval can
+        # pass that gate, so its stale aggregate snapshot must be classified by
+        # version before current-state spec resolution can turn it into a false
+        # ILLEGAL_TRANSITION (§2.6/§3.3).
+        if command.expected_version != current_version:
+            raise TransitionRefused(
+                ReceiptCodes.VERSION_CONFLICT, "stale expected version"
+            )
+
+        spec = registry.resolve(_resolution_key(command, from_state))
+        if spec is None:
+            raise TransitionRefused(
+                ReceiptCodes.ILLEGAL_TRANSITION,
+                "no registry spec matches this exact command",
+            )
+
+        if (from_state is None) != (spec["from_state"] is None):
+            raise TransitionRefused(
+                ReceiptCodes.ILLEGAL_TRANSITION,
+                "creation spec matched an existing aggregate, or the reverse",
+            )
+
+        _check_actor_and_evidence(spec, command)
+        _validate_evidence_documents(command)
+        _check_guard(
+            spec, facts, evidence_validation=bool(command.evidence_documents)
+        )
+
+        ctx.spec = spec
+        ctx.to_state = spec["to_state"]
+
+        declared = set(spec["atomic_write_set"])
+        unknown = declared - set(WRITE_SET_APPLIERS)
+        if unknown:
+            # Never apply a partial atomic set. If the service cannot
+            # perform every member the spec names, the transition does not
+            # happen at all.
+            raise DalError(
+                DalErrorCode.INTERNAL_ERROR,
+                internal_detail=f"no applier for write-set members {sorted(unknown)}",
+            )
+        _validate_bound_authority(ctx, declared)
+        for member in _APPLY_ORDER:
+            if member not in declared:
+                continue
+            WRITE_SET_APPLIERS[member](ctx)
+
+        # Companions are part of the same atomic unit, not a second
+        # dispatchable command (§2.3.1). Their write-set members are
+        # already folded into the root's set; what remains is their own
+        # event, which the oracle asserts alongside the root's.
+        _emit_companion_events(ctx)
+
+        assert spec is not None
+        return TransitionOutcome(
+            receipt_code=ReceiptCodes.APPLIED,
+            receipt_schema=spec["success_receipt_schema"],
+            writes=tuple(m for m in _APPLY_ORDER if m in set(spec["atomic_write_set"])),
+            events=(spec["event_type"],)
+            + tuple(
+                companion["event_type"]
+                for companion in spec["atomic_companion_transitions"]
+            ),
+            from_state=from_state,
+            to_state=spec["to_state"],
+            reason_code=spec["result_reason_code"],
+            reason_owner=spec["result_reason_owner"],
+            spec_id=spec["spec_id"],
+            evidence_validation_stage=(
+                "applied" if command.evidence_documents else None
+            ),
+        )
+
     try:
-        with sessions() as session, session.begin():
-            current = _read_aggregate(
-                session, command.aggregate_type, command.aggregate_id
-            )
-            if current is None:
-                # No row yet. That is the `none` pseudo-state the registry
-                # spells as `from_state: null`, and only a creation spec can
-                # match it -- anything else falls through to
-                # ILLEGAL_TRANSITION when resolution fails.
-                from_state, current_version, checkpoint = None, None, None
-            else:
-                from_state, current_version, checkpoint = current
-
-            # Terminal first: no spec may provide an exit, so the registry is
-            # not even consulted.
-            if from_state in TERMINAL_STATES.get(command.aggregate_type, frozenset()):
-                raise TransitionRefused(
-                    ReceiptCodes.TERMINAL_STATE,
-                    f"{command.aggregate_type} is {from_state}",
-                )
-
-            replayed = session.execute(
-                select(
-                    TransitionReceipt.__table__.c.request_payload_sha256,
-                    TransitionReceipt.__table__.c.from_state,
-                    TransitionReceipt.__table__.c.to_state,
-                    TransitionReceipt.__table__.c.spec_id,
-                    TransitionReceipt.__table__.c.receipt_schema_version,
-                ).where(
-                    TransitionReceipt.__table__.c.idempotency_key
-                    == command.idempotency_key
-                )
-            ).first()
-            if replayed is not None:
-                if replayed[0] != request_digest:
-                    raise TransitionRefused(
-                        ReceiptCodes.IDEMPOTENCY_CONFLICT,
-                        "command key reused with different content",
-                    )
-                # §2.6: a replay returns the *original* receipt, not the
-                # aggregate's current state -- a later transition may have
-                # moved it, and answering with "now" would erase what this
-                # command actually did.
-                raise _Replay(
-                    from_state=replayed[1],
-                    to_state=replayed[2],
-                    spec_id=replayed[3],
-                    receipt_schema=replayed[4],
-                )
-
-            parameters = command.command_parameters
-            spec = registry.resolve(
-                ResolutionKey(
-                    aggregate_type=command.aggregate_type,
-                    from_state=from_state,
-                    command_type=command.command_type,
-                    target_state=parameters.get("target_state"),
-                    effect_outcome=parameters.get("effect_outcome"),
-                    owner_aggregate_type=parameters.get("owner_aggregate_type"),
-                    decision_action=command.decision_action,
-                    reason_code=command.reason_code,
-                )
-            )
-            if spec is None:
-                raise TransitionRefused(
-                    ReceiptCodes.ILLEGAL_TRANSITION,
-                    "no registry spec matches this exact command",
-                )
-
-            if command.expected_version != current_version:
-                raise TransitionRefused(
-                    ReceiptCodes.VERSION_CONFLICT, "stale expected version"
-                )
-            if (from_state is None) != (spec["from_state"] is None):
-                raise TransitionRefused(
-                    ReceiptCodes.ILLEGAL_TRANSITION,
-                    "creation spec matched an existing aggregate, or the reverse",
-                )
-
-            _check_actor_and_evidence(spec, command)
-            _validate_evidence_documents(command)
-            _check_guard(spec, facts)
-
-            ctx = ApplyContext(
-                session=session,
-                spec=spec,
-                command=command,
-                aggregate_id=command.aggregate_id,
-                from_state=from_state,
-                to_state=spec["to_state"],
-                aggregate_version=current_version,
-                now=now,
-                request_payload_sha256=request_digest,
-            )
-            ctx.scratch["existing_checkpoint"] = checkpoint
-
-            declared = set(spec["atomic_write_set"])
-            unknown = declared - set(WRITE_SET_APPLIERS)
-            if unknown:
-                # Never apply a partial atomic set. If the service cannot
-                # perform every member the spec names, the transition does not
-                # happen at all.
-                raise DalError(
-                    DalErrorCode.INTERNAL_ERROR,
-                    internal_detail=f"no applier for write-set members {sorted(unknown)}",
-                )
-            for member in _APPLY_ORDER:
-                if member in declared:
-                    WRITE_SET_APPLIERS[member](ctx)
-
-            # Companions are part of the same atomic unit, not a second
-            # dispatchable command (§2.3.1). Their write-set members are
-            # already folded into the root's set; what remains is their own
-            # event, which the oracle asserts alongside the root's.
-            _emit_companion_events(ctx)
-
+        if transaction_session is not None:
+            if transaction_session.get_bind() is not engine:
+                raise ValueError("transition session belongs to another engine")
+            with transaction_session.begin_nested():
+                return _apply_body(transaction_session)
+        with sessions() as session:
+            return run_write_transaction(session, lambda: _apply_body(session))
     except _Replay as replay:
         return TransitionOutcome(
             receipt_code=ReceiptCodes.APPLIED,
@@ -1683,24 +2118,8 @@ def apply_transition(
             reason_code=None,
             reason_owner=None,
             spec_id=spec["spec_id"] if spec else None,
+            evidence_validation_stage=refusal.validation_stage,
         )
-
-    assert spec is not None
-    return TransitionOutcome(
-        receipt_code=ReceiptCodes.APPLIED,
-        receipt_schema=spec["success_receipt_schema"],
-        writes=tuple(m for m in _APPLY_ORDER if m in set(spec["atomic_write_set"])),
-        events=(spec["event_type"],)
-        + tuple(
-            companion["event_type"]
-            for companion in spec["atomic_companion_transitions"]
-        ),
-        from_state=from_state,
-        to_state=spec["to_state"],
-        reason_code=spec["result_reason_code"],
-        reason_owner=spec["result_reason_owner"],
-        spec_id=spec["spec_id"],
-    )
 
 
 def _emit_companion_events(ctx: ApplyContext) -> None:

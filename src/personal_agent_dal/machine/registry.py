@@ -31,9 +31,34 @@ from personal_agent_dal.errors import DalError, DalErrorCode
 
 
 #: The frozen contract package. Read-only at runtime.
-MANIFESTS_DIR: Final[Path] = (
-    Path(__file__).resolve().parents[3] / "docs" / "dal" / "manifests"
+#:
+#: Two deployment shapes must both resolve. In a venv/wheel deploy the
+#: manifests are packaged inside this package (`frozen_contracts/`, force-
+#: included at build time) and the checkout's docs/ tree does not exist —
+#: the first candidate wins there. In a source checkout the packaged copy
+#: is absent, so the checkout path is the fallback. Both copies carry the
+#: same bytes: the loader hash-verifies whichever it opens, so a drifted
+#: or tampered copy is a hard failure either way (R10 T1 intake, 2026-09-09).
+_PACKAGED_CONTRACTS_DIR: Final[Path] = (
+    Path(__file__).resolve().parents[1] / "frozen_contracts"
 )
+_CHECKOUT_CONTRACTS_DIR: Final[Path] = (
+    Path(__file__).resolve().parents[3] / "docs" / "dal"
+)
+
+
+def _contracts_dir() -> Path:
+    if (_PACKAGED_CONTRACTS_DIR / "manifests").is_dir():
+        return _PACKAGED_CONTRACTS_DIR
+    if _CHECKOUT_CONTRACTS_DIR.is_dir():
+        return _CHECKOUT_CONTRACTS_DIR
+    raise RegistryError(
+        "frozen contract package not found: neither "
+        f"{_PACKAGED_CONTRACTS_DIR} nor {_CHECKOUT_CONTRACTS_DIR} exists"
+    )
+
+
+MANIFESTS_DIR: Final[Path] = _contracts_dir() / "manifests"
 
 TRANSITION_REGISTRY: Final[str] = "transition-spec-registry_v1.0.json"
 GUARD_REGISTRY: Final[str] = "guard-predicate-registry_v1.0.json"
@@ -60,6 +85,22 @@ def _canonical_bytes():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.canonical_bytes
+
+
+def jcs_sha256(value: Any) -> str:
+    """The RFC 8785 JCS SHA-256 digest the frozen contract binds by.
+
+    Contract §3.2 / §3.2.1 freeze `state_sha256` and `artifact_sha256` as
+    ``SHA-256(RFC 8785 JCS UTF-8 bytes)`` of the binding object. Recomputing
+    that digest here — from the same canonicaliser the generator and the
+    registry hash check share — is what lets a binding validator agree with the
+    frozen `protected_binding_sha256` instead of with itself.
+
+    Raises the canonicaliser's ``JCSCanonicalizationError`` (a ``ValueError``)
+    for any value outside I-JSON; callers that must fail closed on a malformed
+    binding catch that and refuse rather than repair.
+    """
+    return hashlib.sha256(_canonical_bytes()(value)).hexdigest()
 
 
 def _load_verified(filename: str, body_key: str) -> list[dict[str, Any]]:
@@ -166,6 +207,30 @@ class TransitionRegistry:
     def resolve(self, key: ResolutionKey) -> dict[str, Any] | None:
         """The spec for this exact key, or `None`. Never a fuzzy match."""
         return self._by_key.get(key)
+
+    def resolve_command_shape(
+        self, key: ResolutionKey
+    ) -> tuple[dict[str, Any], ...]:
+        """Specs matching every command discriminator except current state.
+
+        Approval consumption has to be arbitrated before the aggregate version
+        check, including after another command has already moved the aggregate.
+        This projection lets that gate prove the submitted command shape is
+        approval-consuming without pretending the post-race current state is
+        still the state the approval was issued against. Exact dispatch still
+        uses :meth:`resolve` after version arbitration.
+        """
+        return tuple(
+            spec
+            for candidate, spec in self._by_key.items()
+            if candidate.aggregate_type == key.aggregate_type
+            and candidate.command_type == key.command_type
+            and candidate.target_state == key.target_state
+            and candidate.effect_outcome == key.effect_outcome
+            and candidate.owner_aggregate_type == key.owner_aggregate_type
+            and candidate.decision_action == key.decision_action
+            and candidate.reason_code == key.reason_code
+        )
 
     def specs_for(
         self, aggregate_type: str, from_state: str

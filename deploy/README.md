@@ -499,8 +499,155 @@ It **preserves** users, `/var/lib` data, `/etc/personal-agent` secrets and
 `/opt` code — removing any of those is a separate explicit decision, not part
 of a rollback.
 
+## DAL Dev Workflow Service (R05 transport + R08 operator plane)
+
+A **separate trust domain** from the Finance/Agent production: its own
+systemd unit, user, 0700 data directory, secrets and database. No dependency
+on the Finance MCP. Order matters in three places, as below.
+
+| Path / name | Owner | Mode | Purpose |
+|---|---|---|---|
+| user `personal-agent-dal` | — | nologin | runs the DAL service |
+| `/var/lib/personal-agent-dal` | dal:dal | 0700 | `dal.sqlite` |
+| `/etc/personal-agent/dal.env` | root:dal | 0640 | non-secret env lines |
+| `/etc/personal-agent/dal.env.d/service-key` | root:dal | 0640 | HMAC key (worker + operator tokens) |
+| `/etc/personal-agent/dal.env.d/enrollment-secret` | root:dal | 0640 | gates `/enroll` |
+| `/etc/personal-agent/dal.env.d/github-app.env` | root:dal | 0640 | R09-B GitHub App identifiers + key path; template created by provision, loaded by the unit unconditionally |
+| `/etc/personal-agent/dal.env.d/github-app.pem` | root:dal | 0640 | R09-B GitHub App private key, scp'd per 密钥清单; never in github-app.env |
+| `/etc/personal-agent/dal-kill-switch.json` | root:root | 0644 | PRESENT at install → claims/mutations answer 503 |
+| `/var/backups/personal-agent/dal` | dal:backup | 2770 setgid | staging for `dal.latest.sqlite`, read by the backup user |
+| `/opt/personal-agent-dal/libexec/dal_snapshot.py` | root:root | 0755 | staged snapshot via the shared online_backup primitive |
+| `personal-agent-dal-reconcile.timer` | dal:dal process | 5 min | server-local operator console `reconcile-sweep`; short token minted in memory |
+| listener `127.0.0.1:8820` | — | loopback | Nginx proxies `/dal/` to it |
+
+The kill switch is the opposite polarity from the Finance write switch, on
+purpose: for the write switch, "missing" must mean "writes off"; for the DAL
+queue, `absent` means the queue is OPEN. The install lays the file down
+present (fail-closed), and **go-live is deliberately removing it**. Read-only
+operator endpoints and `/health` work either way; every `/jobs/claim` and
+operator mutation answers `503 kill_switch_active` while the file exists.
+
+### Rollout (first time)
+
+```sh
+# 1. Ship the deploy directory (same as step 1 above), then:
+sudo bash ~/personal-agent-deploy/install.sh          # adds the dal user/dir/unit
+sudo bash ~/personal-agent-deploy/provision_dal_keys.sh  # mint secrets + kill switch
+#    provision also lays down /etc/personal-agent/dal.env.d/github-app.env as a
+#    TEMPLATE (the unit loads it unconditionally — without it the unit cannot
+#    boot). Fill in the four values, scp the App private key to
+#    /etc/personal-agent/dal.env.d/github-app.pem (root:personal-agent-dal
+#    0640, per 密钥清单), then run the start gate:
+sudo vim /etc/personal-agent/dal.env.d/github-app.env
+sudo bash ~/personal-agent-deploy/verify_dal_github_app.sh
+
+# 2. Application code + migration. deploy_code.sh only updates the Finance
+#    venv (/opt/personal-agent); the DAL is its own trust domain whose venv
+#    lives under /opt/personal-agent-dal, so install the wheel there
+#    explicitly, then upgrade:
+#      sudo /opt/personal-agent-dal/.venv/bin/pip install --no-deps \
+#        --force-reinstall <shipped wheel>
+sudo -u personal-agent-dal /opt/personal-agent-dal/.venv/bin/personal-agent-dal-db \
+  --database /var/lib/personal-agent-dal/dal.sqlite upgrade
+
+# 3. Enable (order: gate passes first; the DAL db-backup timer only once the
+#    service and its database exist, since the snapshot unit needs both):
+sudo systemctl enable --now personal-agent-dal-api
+#    Persistent GitHub response-loss reconciliation. It calls the operator
+#    console over loopback and never stores a bearer token on disk:
+sudo systemctl enable --now personal-agent-dal-reconcile.timer
+#    Backup set (R09-B): enable the DAL snapshot timer so dal.sqlite joins the
+#    daily offsite snapshot before the 16:07 backup window:
+sudo systemctl enable --now personal-agent-dal-db-backup.timer
+
+# 4. Nginx: back up the existing DAL snippet and TLS vhost first.
+#    Update the shared snippet as well as the /dal/ and internal-deny
+#    locations below; preserve unrelated vhost customizations.
+sudo install -m 0644 ~/personal-agent-deploy/nginx/dal-upstream.conf /etc/nginx/snippets/dal-upstream.conf
+#    Then:
+sudo nginx -t && sudo systemctl reload nginx
+
+# 5. Acceptance:
+sudo bash ~/personal-agent-deploy/dal-verify.sh
+```
+
+Nginx locations to add inside the existing `agent.example.invalid` 443 server
+block, before the catch-all `location /`:
+
+```nginx
+    # Public ingress must not forward the signed PA-only bridge.
+    location = /internal { return 403; }
+    location ^~ /internal/ { return 403; }
+    location = /dal/transport/v1/internal { return 403; }
+    location ^~ /dal/transport/v1/internal/ { return 403; }
+
+    # DAL Dev Workflow Service (R08): loopback 8820, snippet dal-upstream.conf.
+    location /dal/transport/v1/jobs/ {
+        limit_req zone=pa_poll burst=30 nodelay;
+        include /etc/nginx/snippets/dal-upstream.conf;
+    }
+
+    location /dal/transport/v1/ {
+        limit_req zone=pa_auth burst=3 nodelay;
+        include /etc/nginx/snippets/dal-upstream.conf;
+    }
+
+    location /dal/ {
+        limit_req zone=pa_default burst=10 nodelay;
+        include /etc/nginx/snippets/dal-upstream.conf;
+    }
+```
+
+For co-located PA/DAL renewal delivery, PA uses exactly
+`http://127.0.0.1:8820` as its bridge base URL, with dedicated ES256 assertion
+verification still mandatory. No trailing slash or public transport prefix is
+accepted. Existing HTTPS root destinations remain supported for a separately
+configured trusted channel; this does not make the public internal ingress
+available. Update both PA and DAL together for required signed `proposal_id`.
+Do not rewrite old queued claims: legacy imports are replay-only for exact
+previously imported records. Preserve both databases and delivery uncertainty.
+See [renewal handoff](../docs/dal/DAL_mini_preflight.md) for coordinated rollout
+and recovery; none of these production commands is run by local tests.
+
+### Operator token issuing channel
+
+```sh
+bash /opt/personal-agent/deploy/issue_dal_operator_token.sh \
+  --operator-id example-operator --capabilities read control --hours 1
+# writes ~/.dal-operator-token (0600, owner deploy), prints identity+expiry
+```
+
+Then from the MacBook Air console (Let's Encrypt CA is in the system store,
+so no `--ca-bundle` needed against the real Nginx TLS):
+
+```sh
+/opt/personal-agent/.venv/bin/personal-agent-dal-console \
+  --base-url https://agent.example.invalid/dal/transport/v1 \
+  --token-file ~/.dal-operator-token list
+```
+
+Copy the 0600 token file to the MacBook Air with `scp -p` (preserves 0600);
+the token value never appears in a command line or log.
+
+### DAL rollback
+
+`deploy/rollback.sh` does not know the DAL unit; stop and remove it explicitly
+(preserving users, `/var/lib/personal-agent-dal`, and `/etc/personal-agent/dal*`
+exactly like every other rollback does):
+
+```sh
+sudo systemctl disable --now personal-agent-dal-reconcile.timer personal-agent-dal-api
+sudo rm /etc/systemd/system/personal-agent-dal-api.service \
+  /etc/systemd/system/personal-agent-dal-reconcile.service \
+  /etc/systemd/system/personal-agent-dal-reconcile.timer
+sudo systemctl daemon-reload
+# then remove the /dal/ locations from the Nginx vhost; personal site re-check applies
+```
+
 ## Current boundaries
 
+- The DAL service (R05+R08) baseline deployment is a separate rollout from the
+  Finance units above; its runbook is the DAL section in this file.
 - DEV-036 ECS enablement and live review/cleanup/backup-age verification are
   complete. DEV-039 exercised the rollback sequence above on 2026-08-03,
   including full unit removal/reinstall and Nginx removal/restore while the

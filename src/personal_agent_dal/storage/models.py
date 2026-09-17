@@ -130,6 +130,15 @@ OPERATION_EVENT_TYPES: Final[tuple[str, ...]] = (
     "database.migrated",
     "database.retention_applied",
     "database.encrypted_roundtrip",
+    "decision.created",
+    "notification.batch_flushed",
+    "notification.delivery_created",
+    "notification.delivery_claimed",
+    "notification.delivery_started",
+    "notification.delivery_succeeded",
+    "notification.delivery_failed",
+    "notification.delivery_retry_scheduled",
+    "notification.delivery_dead_lettered",
 )
 
 

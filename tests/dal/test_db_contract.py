@@ -486,6 +486,41 @@ def test_downgrade_returns_the_database_to_base_and_upgrade_replays(
     assert sorted(inspect(engine).get_table_names()) == migrated
 
 
+def test_0003_downgrade_handles_existing_decision_event(tmp_path: Path) -> None:
+    """A used Dock database can return to 0002 without CHECK failure."""
+
+    from sqlalchemy import inspect, text
+
+    from personal_agent_dal.storage import db
+    from personal_agent_dal.storage.engine import create_database_engine
+
+    engine = create_database_engine(tmp_path / "dal-used-dock.db")
+    db.upgrade(engine)
+    with engine.connect() as connection, connection.begin():
+        connection.execute(
+            text(
+                "INSERT INTO operation_events "
+                "(operation_event_id, event_type, operation_id, occurred_at, detail) "
+                "VALUES ('dock-event', 'decision.created', 'dock-op', "
+                "'2026-08-14T00:00:00.000000Z', '{}')"
+            )
+        )
+
+    db.downgrade(engine, "0002")
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT count(*) FROM operation_events WHERE event_type = 'decision.created'")
+        ).scalar_one() == 0
+    assert "root_id" not in {
+        column["name"] for column in inspect(engine).get_columns("decisions")
+    }
+
+    db.upgrade(engine)
+    assert "root_id" in {
+        column["name"] for column in inspect(engine).get_columns("decisions")
+    }
+
+
 def test_migrated_and_metadata_built_schemas_agree(tmp_path: Path) -> None:
     """`create_all` and the migration must produce the same database.
 
@@ -493,12 +528,36 @@ def test_migrated_and_metadata_built_schemas_agree(tmp_path: Path) -> None:
     from the migration. If those two drift, every test runs against a database
     that does not exist in production — including the triggers, which Alembic
     autogenerate cannot see and which are therefore the most likely thing to be
-    present in one and missing from the other.
+    present in one and missing from the other. CHECK constraints are compared
+    too (round-4 finding R4-3): a CHECK present in only one build is an
+    invisible contract difference.
     """
+    import re
+
     from sqlalchemy import inspect, text
 
     from personal_agent_dal.storage import db
     from personal_agent_dal.storage.engine import create_all, create_database_engine
+
+    #: Historical tables whose migration-era CHECK names predate a strict
+    #: name parity rule (double `ck_` prefixes, missing outer parentheses).
+    #: Their SQL semantics agree; renaming their constraints is a separate
+    #: decision, not this test's. New tables get exact CHECK parity.
+    _CHECK_PARITY_EXEMPT = frozenset(
+        {
+            "commit_capabilities",
+            "notification_batches",
+            "notification_deliveries",
+            "operation_events",
+            "worker_checkpoints",
+            "worker_enrollments",
+            "worker_jobs",
+            "worker_result_receipts",
+        }
+    )
+
+    def _sql(text_value: str) -> str:
+        return re.sub(r"\s+", "", text_value).lower()
 
     def shape(engine) -> dict[str, object]:  # noqa: ANN001
         inspector = inspect(engine)
@@ -509,15 +568,24 @@ def test_migrated_and_metadata_built_schemas_agree(tmp_path: Path) -> None:
                     text("SELECT name FROM sqlite_master WHERE type = 'trigger'")
                 )
             )
+        tables = [
+            t for t in inspector.get_table_names() if t != "alembic_version"
+        ]
+        checks = {
+            table: {
+                (c["name"], _sql(c["sqltext"]))
+                for c in inspector.get_check_constraints(table)
+            }
+            for table in tables
+            if table not in _CHECK_PARITY_EXEMPT
+        }
         return {
-            "tables": sorted(
-                t for t in inspector.get_table_names() if t != "alembic_version"
-            ),
+            "tables": sorted(tables),
             "columns": {
                 table: sorted(c["name"] for c in inspector.get_columns(table))
-                for table in sorted(inspector.get_table_names())
-                if table != "alembic_version"
+                for table in sorted(tables)
             },
+            "checks": checks,
             "triggers": triggers,
         }
 

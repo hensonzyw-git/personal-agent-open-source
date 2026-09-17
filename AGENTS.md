@@ -62,6 +62,10 @@ Phase 1 docs, or agent runtime code).
 The authoritative handoff point and ordered next work is always
 `PROJECT_STATUS.md`.
 
+For DAL continuation, first read `docs/dal/DAL_完整开发流程优先规划_v0.1.md`
+(2026-09-10 highest-priority planning entry). It supersedes older DAL execution
+ordering, not existing safety contracts; PRD/design approval gates still apply.
+
 ## 5. Engineering and safety rules
 
 - Keep business policy outside ADK and outside any individual model SDK:
@@ -85,6 +89,7 @@ The authoritative handoff point and ordered next work is always
   for the task, and report what was read or written.
 - Before changes, inspect the worktree and preserve unrelated user changes.
   Use focused edits; do not refactor adjacent code or documents unless asked.
+
 - **The PRD → technical-design gate is per round, and no artifact above it
   counts.** For any new domain, feature, or cross-cutting capability, first
   submit a PRD draft and wait for Henson's explicit approval; then submit the
@@ -324,14 +329,20 @@ conflict instead of silently choosing an old default.
 - `docs/Agent横向能力技术方案_v1.0.md` — frozen framework-neutral architecture,
   versioned data/API contracts, failure boundaries and CAP acceptance gates for
   those capabilities.
-- `docs/开发Agent闭环PRD_v1.0.md` — confirmed product and Human-in-the-loop
-  baseline for feature intake through reviewed PR, with manual high-risk gates.
+- `docs/开发Agent闭环PRD_v1.0.md` — **PRD v1.1, approved 2026-09-12 (P0-01)**;
+  configurable end-to-end development workflow. 13 business actions; two daily
+  human gates (PRD then delivery) with merge approval, the GitHub manual merge
+  and the project design gate counted separately; an authorized-repository and
+  local-project scope; per-role runtime/provider/model/placement configuration.
+  Approval migrates no existing runtime contract, and the same-model review
+  exception stays unapproved.
 - `docs/开发Agent闭环技术方案_v1.0.md` — graph-orchestrated deterministic
   workflow, GitHub and Home Mac Worker architecture, provider routing, security
   and recovery design.
 - `docs/开发Agent闭环开发拆解_v0.1.md` — separate DAL-001–050 implementation
-  track and gates; Phase 1 completion, DAL-G0-P and DAL-G0-E are passed, but
-  DAL-007+ implementation still requires Henson's explicit authorization.
+  track and historical gates; current trusted single-user PRD/design and release
+  integration are approved under `docs/gates/2026-09-15-dal-trusted-single-user.md`.
+  Runtime admission and external actions retain their specific evidence gates.
 - `docs/Phase1技术方案设计计划_v0.1.md` — next-stage work order and the gate
   before implementation.
 - `docs/Phase1技术方案_v0.1.md` — current Phase 1 technical design;

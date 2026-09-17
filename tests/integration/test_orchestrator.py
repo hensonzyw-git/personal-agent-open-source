@@ -1084,6 +1084,112 @@ def test_a_resolved_write_walks_through_verification_to_success(session, keyring
     assert dispatcher.commit_calls[0]["idempotency_key"] == op.idempotency_key
 
 
+def test_external_calls_never_hold_a_read_transaction(session, keyring) -> None:
+    """F1: every model/MCP call must start from a closed transaction.
+
+    `_step` used to end with `session.refresh(operation)` after its commit; the
+    refresh's SELECT autobegins a read transaction that stays open across the
+    next external call. A transaction that has read cannot write once anyone
+    else commits (SQLite refuses the snapshot upgrade instead of waiting), so
+    the operation would die mid-flight after a real external write may have
+    landed. The deterministic offline proof: at the entry of every external
+    call seam the session must report no open transaction.
+    """
+    op = _fresh_operation(session)
+    intent = WriteIntent("finance.log_expense", {"name": "午饭", "amount": "45"})
+    violations: list[str] = []
+
+    def check(seam: str) -> None:
+        if session.in_transaction():
+            violations.append(seam)
+
+    class TxnCheckingInterpreter(FakeInterpreter):
+        def interpret(self, *, envelope):
+            check("interpret")
+            return self.result
+
+    class TxnCheckingDispatcher(FakeDispatcher):
+        def resolve(self, *, tool, model_args, idempotency_key):
+            check("resolve")
+            return self._resolve
+
+        def commit(self, **kwargs):
+            check("commit")
+            return super().commit(**kwargs)
+
+    result = _run(
+        session, op,
+        interpreter=TxnCheckingInterpreter(
+            ToolCall("finance.log_expense", {"name": "午饭"})
+        ),
+        dispatcher=TxnCheckingDispatcher(resolve=Resolved(intent), commit=Written("rec1")),
+        keyring=keyring,
+    )
+    assert result.state == "succeeded", result
+    assert violations == [], (
+        f"external call seams held an open read transaction: {violations}"
+    )
+
+
+def test_competing_commit_during_the_model_turn_does_not_break_the_state_walk(
+    session, keyring, tmp_path
+) -> None:
+    """F1: another connection's commit during the model turn must be survivable.
+
+    The model turn is the longest window in the system for someone else to
+    commit to the Agent database. Under the old code `_step("interpreting")`'s
+    trailing refresh left a read snapshot open across `dispatcher.resolve`, so
+    a competing commit during the resolve call made the next state write fail
+    with "database is locked" -- after the external call may have taken effect.
+    Here a second session commits an unrelated write the moment the resolve
+    call begins; the state walk must still complete to `succeeded`.
+    """
+    from personal_agent.storage.models import Device
+
+    def commit_a_competitor() -> None:
+        other_engine = create_database_engine(
+            Path(session.get_bind().url.database)
+        )
+        with session_factory(other_engine)() as other:
+            other.add(
+                Device(
+                    device_id="dev-competitor",
+                    display_name="Competitor",
+                    public_key="K2",
+                    device_key_thumbprint="T2",
+                    status="active",
+                    scopes="[]",
+                    allowed_tools_version="v1",
+                    created_at=NOW,
+                )
+            )
+            other.commit()
+        other_engine.dispose()
+
+    op = _fresh_operation(session)
+    intent = WriteIntent("finance.log_expense", {"name": "午饭", "amount": "45"})
+
+    class CommittingDispatcher(FakeDispatcher):
+        def resolve(self, *, tool, model_args, idempotency_key):
+            # The external resolve call is "in flight" now: commit a competing
+            # write from a fully independent connection against the same file
+            # database while the orchestrator's snapshot is (or is not) open.
+            commit_a_competitor()
+            return self._resolve
+
+    result = _run(
+        session, op,
+        interpreter=FakeInterpreter(
+            ToolCall("finance.log_expense", {"name": "午饭"})
+        ),
+        dispatcher=CommittingDispatcher(resolve=Resolved(intent), commit=Written("recOK")),
+        keyring=keyring,
+    )
+    assert result.state == "succeeded", result
+    session.refresh(op)
+    assert op.state == "succeeded"
+
+
 def test_each_state_transition_records_its_actual_time(session, keyring) -> None:
     op = _fresh_operation(session)
     intent = WriteIntent("finance.log_expense", {"name": "午饭", "amount": "45"})

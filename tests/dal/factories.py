@@ -12,10 +12,12 @@ resembling real repository, ledger or device data.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from personal_agent_core.timeutil import utc_now
 
+from personal_agent_dal.machine.binding import build_state_binding
+from personal_agent_dal.machine.registry import jcs_sha256
 from personal_agent_dal.storage.models import Event, Feature, OperationReceiptRow
 
 
@@ -23,6 +25,12 @@ from personal_agent_dal.storage.models import Event, Feature, OperationReceiptRo
 #: "nothing here yet" without pretending to be a real artifact.
 EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 PLACEHOLDER_GIT_SHA = "0" * 40
+
+
+def state_binding_sha256(feature: Feature) -> str:
+    """Hash the exact server-side Feature projection used by approval tests."""
+
+    return jcs_sha256(build_state_binding(feature))
 
 
 def feature_row(
@@ -112,7 +120,8 @@ def operation_receipt_row(
 
 
 def decision_row(*, feature_id: str, decision_id: str = "decision-seeded",
-                 status: str = "open", now: datetime | None = None):
+                 status: str = "open", now: datetime | None = None,
+                 state_sha256: str | None = None):
     from personal_agent_dal.storage.machine_models import Decision
 
     now = now or utc_now()
@@ -125,29 +134,44 @@ def decision_row(*, feature_id: str, decision_id: str = "decision-seeded",
         status=status,
         priority=4,
         artifact_sha256=None,
-        state_sha256=None,
+        state_sha256=state_sha256,
         is_incident=False,
+        root_id=decision_id,
+        safety_or_irreversible=False,
+        blocking_scope="none",
+        depends_on_json="[]",
+        expires_at=now + timedelta(minutes=15),
+        superseded_by=None,
+        notification_priority="normal",
         created_at=now,
         updated_at=now,
     )
 
 
-def approval_row(*, feature_id: str, approval_id: str = "approval-seeded",
-                 now: datetime | None = None):
-    from datetime import timedelta
-
+def approval_row(
+    *,
+    feature_id: str,
+    approval_id: str = "approval-seeded",
+    action: str = "approve_plan",
+    decision_id: str | None = None,
+    decision_version: int | None = None,
+    expected_feature_version: int = 1,
+    expected_state: str = "awaiting_plan_review",
+    now: datetime | None = None,
+    state_sha256: str | None = None,
+):
     from personal_agent_dal.storage.machine_models import Approval
 
     now = now or utc_now()
     return Approval(
         approval_id=approval_id,
-        action="approve_plan",
+        action=action,
         feature_id=feature_id,
-        decision_id=None,
-        decision_version=None,
-        expected_feature_version=1,
-        expected_state="awaiting_plan_review",
-        state_sha256=None,
+        decision_id=decision_id,
+        decision_version=decision_version,
+        expected_feature_version=expected_feature_version,
+        expected_state=expected_state,
+        state_sha256=state_sha256,
         artifact_sha256=None,
         device_id="registered-device",
         subject_id="single-user",
