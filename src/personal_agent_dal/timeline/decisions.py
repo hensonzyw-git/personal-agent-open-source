@@ -108,7 +108,10 @@ class DecisionService:
                 grant=s.get(Grant,selected['grant_id'])
                 if grant is None or grant.revoked or grant.expires_at<=self.r.now() or grant.project_id!=selected['project_id'] or grant.subject!=subject:raise ValueError('INPUT_NOT_AUTHORIZED')
                 data=self.r._open(Grant,grant.grant_id,'sealed_grant',grant.sealed_grant)
-                if digest(data)!=grant.digest or 'read' not in data['actions']:raise ValueError('INPUT_NOT_AUTHORIZED')
+                if (digest(data)!=grant.digest or 'read' not in data['actions']
+                    or data.get('request_id')!=wf.request_id or data.get('kind')!=selected['kind']
+                    or data.get('project_id')!=grant.project_id or data.get('subject')!=subject):
+                    raise ValueError('INPUT_NOT_AUTHORIZED')
                 s.add(ProjectBinding(workflow_id=wf.workflow_id,project_id=grant.project_id,grant_id=grant.grant_id,grant_version=grant.version,
                     route_artifact_id=binding['artifact_id'],candidate_digest=binding['candidate_set_digest'],
                     sealed_binding=self.r._seal(ProjectBinding,wf.workflow_id,'sealed_binding',dict(candidate=selected,grant_digest=grant.digest))))

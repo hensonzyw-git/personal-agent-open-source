@@ -7,7 +7,7 @@ from personal_agent_core.ids import new_id
 from personal_agent_core.manifest import canonical_json
 from personal_agent_core.sqlite import run_write_transaction
 from personal_agent_dal.machine.workflow_selection import Closed, Id, Version
-from personal_agent_dal.storage.timeline_models import RoleConfigurationRevision, RoleConfigurationBinding, DevelopmentRoleSnapshot
+from personal_agent_dal.storage.timeline_models import RoleConfigurationRevision, RoleConfigurationBinding, DevelopmentRoleSnapshot, DevelopmentProjectBinding
 from personal_agent_dal.timeline.requests import digest
 
 
@@ -42,7 +42,7 @@ class RoleService:
             matches=[r for r in self.registry if {k:v for k,v in r.items() if k!='adapter'}==role and r.get('adapter') in ('codex_cli','claude_code')]
             if len(matches)!=1:raise ValueError('ROLE_UNAVAILABLE')
         for name in ('planner','coder'):
-            if (roles[name]['provider_ref'],roles[name]['model'])==(roles['reviewer']['provider_ref'],roles['reviewer']['model']):raise ValueError('REVIEW_NOT_INDEPENDENT')
+            if roles[name]['model']==roles['reviewer']['model']:raise ValueError('REVIEW_NOT_INDEPENDENT')
         return value
 
     def register(self,body):
@@ -65,10 +65,17 @@ class RoleService:
             else:s.add(RoleConfigurationBinding(scope=scope,scope_id=scope_id,revision_id=revision_id,version=1))
         with self.requests.sessions() as s:return run_write_transaction(s,lambda:work(s))
 
-    def resolve(self,*,project_id=None,workflow_id=None):
-        with self.requests.sessions() as s:
+    def resolve(self,*,project_id=None,workflow_id=None,_session=None):
+        def read(s):
+            selected_project=project_id
+            if workflow_id is not None:
+                project=s.scalar(select(DevelopmentProjectBinding).where(DevelopmentProjectBinding.workflow_id==workflow_id))
+                if project is not None:
+                    if selected_project is not None and selected_project!=project.project_id:
+                        raise ValueError('PROJECT_BINDING_MISMATCH')
+                    selected_project=project.project_id
             selected=None;source=None
-            for scope,id in [('system','default'),('project',project_id),('task',workflow_id)]:
+            for scope,id in [('system','default'),('project',selected_project),('task',workflow_id)]:
                 if id is None:continue
                 binding=s.scalar(select(RoleConfigurationBinding).where(RoleConfigurationBinding.scope==scope,RoleConfigurationBinding.scope_id==id))
                 if binding:selected=s.get(RoleConfigurationRevision,binding.revision_id);source=scope
@@ -78,14 +85,18 @@ class RoleService:
             self.validate(body)
             return dict(**body,digest=selected.digest,source=source,available=False,reason='RUNTIME_ADMISSION_REQUIRED')
 
-    def snapshot(self,**scope):
-        resolved=self.resolve(**scope)
-        if not resolved['roles']:raise ValueError('ROLE_UNAVAILABLE')
-        body={k:resolved[k] for k in ('contract_version','configuration_id','revision','roles','digest','source')}
-        sha=digest(body)
+        if _session is not None:return read(_session)
+        with self.requests.sessions() as s:return read(s)
+
+    def snapshot(self,*,_session=None,**scope):
         def work(s):
+            resolved=self.resolve(**scope,_session=s)
+            if not resolved['roles']:raise ValueError('ROLE_UNAVAILABLE')
+            body={k:resolved[k] for k in ('contract_version','configuration_id','revision','roles','digest','source')}
+            sha=digest(body)
             row=s.scalar(select(DevelopmentRoleSnapshot).where(DevelopmentRoleSnapshot.digest==sha))
             if row is None:
                 row=DevelopmentRoleSnapshot(snapshot_id=new_id(),digest=sha,body=canonical_json(body));s.add(row)
             return dict(**body,snapshot_id=row.snapshot_id,snapshot_digest=sha)
+        if _session is not None:return work(_session)
         with self.requests.sessions() as s:return run_write_transaction(s,lambda:work(s))

@@ -50,3 +50,45 @@ def test_stale_command_has_durable_refusal_instead_of_endless_unknown(world):
     assert receipt==dict(command_id='missing-target',decision_id='missing',status='refused',reason='STALE_BINDING')
     assert service.process(**body)==receipt
     with pytest.raises(ValueError,match='IDEMPOTENCY_CONFLICT'):service.process(**dict(body,text='拒绝'))
+
+
+def routed(world, *, grant_request=None, candidate_kind='existing'):
+    from datetime import timedelta
+    from tests.dal.test_timeline_driver import configured
+    from personal_agent_dal.storage.timeline_models import DevelopmentDriverStep as Step
+    from personal_agent_dal.timeline.operator import Authorization,register_authorization
+    r,driver,wf,launch=configured(world)
+    driver.accept(launch['step_id'],attempt_id=launch['attempt_id'],result=dict(
+        kind='clarification',text='Synthetic requirement',ready=True,questions=[],acceptance=['A']))
+    register_authorization(r,Authorization(grant_id='grant',request_id=grant_request or wf,
+        project_id='project',subject='device:synthetic',approval_evidence_ref='approval',
+        root='/synthetic/project',kind='existing',display_name='Synthetic project',actions=['read','write'],
+        budget_seconds=600,expires_at=r.now()+timedelta(hours=1),registration_policy='local_tracker'),actor='synthetic-operator')
+    prepared=driver.tick(wf)
+    with r.sessions() as s:
+        step=s.get(Step,prepared['step_id'])
+        admission=dict(step_id=step.step_id,input_digest=step.input_digest,snapshot_id=step.snapshot_id,
+            gate_epoch=step.gate_epoch,worker_id='synthetic',receipt_digest='a'*64)
+    launch=driver.dispatch(prepared['step_id'],admission=admission)
+    driver.accept(launch['step_id'],attempt_id=launch['attempt_id'],result=dict(kind='project_route',
+        text='Synthetic route',candidates=[dict(candidate_key='one',project_id='project',grant_id='grant',
+        display_name='Synthetic project',kind=candidate_kind)]))
+    from sqlalchemy import select
+    from personal_agent_dal.storage.timeline_models import DevelopmentDecisionRequest as Decision
+    with r.sessions() as s:
+        decision=s.scalar(select(Decision).where(Decision.workflow_id==wf))
+        return r,wf,dict(command_id='project-selection',source_message_ref='project-reply',
+            subject='device:synthetic',decision_id=decision.decision_id,binding_digest=decision.binding_digest,text='选第一个项目')
+
+
+@pytest.mark.parametrize('attack',['wrong_request','wrong_kind'])
+def test_project_choice_cannot_reuse_another_request_or_kind_grant(world,attack):
+    r,wf,command=routed(world,grant_request='other-request' if attack=='wrong_request' else None,
+        candidate_kind='local_new' if attack=='wrong_kind' else 'existing')
+    with pytest.raises(ValueError,match='INPUT_NOT_AUTHORIZED'):
+        DecisionService(r).consume(**command)
+
+
+def test_authorized_project_choice_advances_only_to_registration(world):
+    r,wf,command=routed(world)
+    assert DecisionService(r).consume(**command)['phase']=='project_registration'

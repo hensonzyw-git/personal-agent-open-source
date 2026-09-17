@@ -13,6 +13,8 @@ class TimelineTransport(FixedDalTransport):
     def _post(self,path,body):
         with httpx.Client(trust_env=False,follow_redirects=False,timeout=10) as client:
             with client.stream('POST',self.base_url+path,json=body) as response:
+                if response.status_code == 429 or 500 <= response.status_code <= 599:
+                    raise OSError('DAL_UNAVAILABLE')
                 if not 200 <= response.status_code < 300:
                     raise ValueError('DAL_UNAVAILABLE')
                 raw=bytearray()

@@ -39,7 +39,7 @@ def test_nonempty_budget_history_blocks_destructive_downgrade(tmp_path):
             db.downgrade(engine, "0012_calendar_media_merge")
         with engine.connect() as conn:
             assert conn.execute(text("SELECT reserved_count FROM search_budget_days")).scalar_one() == 1
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0015_dal_delivery_status"
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0020_dal_refused_commands"
     finally:
         engine.dispose()
 
@@ -50,7 +50,7 @@ def test_matching_create_all_tables_are_adopted_without_losing_data(tmp_path):
     # Reproduce the pre-bridge create_all schema this adoption gate covers.
     Base.metadata.create_all(engine, tables=[
         table for name, table in Base.metadata.tables.items()
-        if not name.startswith("dal_resume_")
+        if name in RUN_TABLES
     ])
     with engine.begin() as conn:
         conn.execute(insert(Base.metadata.tables['search_budget_days']).values(
@@ -72,7 +72,7 @@ def test_existing_v2_schema_must_match_before_adoption(tmp_path, damage):
         # Restrict the historical adoption fixture to pre-bridge tables.
         Base.metadata.create_all(engine, tables=[
             table for name, table in Base.metadata.tables.items()
-            if not name.startswith("dal_resume_")
+            if name in RUN_TABLES
         ])
         with engine.begin() as conn:
             if damage == 'wrong_column':

@@ -49,3 +49,16 @@ def test_all_dependencies_need_commit_evidence(world):
     service.committed('one',1,expected_version=6,receipt_digest='f'*64,**candidate)
     assert service.ready(id)==['two']
     with world[2].sessions() as s:assert len(list(s.scalars(select(DevelopmentDependencySatisfaction))))==1
+
+
+@pytest.mark.parametrize('mutation',[
+    lambda b:b.update(edges=None),
+    lambda b:b['nodes'].__setitem__(0,None),
+    lambda b:b['nodes'][0].update(revision=True),
+    lambda b:b['nodes'][0].update(acceptance=[{}]),
+    lambda b:b['nodes'].__setitem__(1,dict(b['nodes'][0],revision=2,acceptance=['b'])),
+])
+def test_malformed_stage_plan_is_closed_refusal(world,mutation):
+    body=plan();mutation(body);r=submit(world[2])
+    with pytest.raises(ValueError,match='PLAN_INVALID'):
+        StageService(world[2]).freeze(workflow_id=r['request_id'],revision=1,design_digest='a'*64,review_digest='b'*64,body=body)

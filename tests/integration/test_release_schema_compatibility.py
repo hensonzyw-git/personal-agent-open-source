@@ -48,7 +48,7 @@ def test_main_0013_rows_and_schema_survive_bridge_release(tmp_path):
         assert all(signature(inspect(engine), name) == schemas[name] for name in names)
         assert set(RUN_TABLES) <= names
         graph = ScriptDirectory.from_config(db.alembic_config(engine))
-        assert graph.get_heads() == ['0015_dal_delivery_status']
+        assert graph.get_heads() == ['0020_dal_refused_commands']
         assert graph.get_revision('0015_dal_delivery_status').down_revision == '0014_dal_resume_decisions'
         assert graph.get_revision('0014_dal_resume_decisions').down_revision == '0013_adk_model_led'
         with engine.connect() as conn:
@@ -116,7 +116,7 @@ def test_dal_0010_historical_job_unknown_effect_and_receipt_survive_0018(tmp_pat
             current = dict(conn.execute(text('SELECT * FROM worker_jobs')).mappings().one())
             assert {key: current[key] for key in old_job} == old_job
             assert current['execution_mode'] == 'legacy_unclassified'
-            assert conn.execute(text('SELECT version_num FROM alembic_version')).scalar_one() == '0018'
+            assert conn.execute(text('SELECT version_num FROM alembic_version')).scalar_one() == '0021'
             assert conn.execute(text('PRAGMA foreign_key_check')).all() == []
         assert _rows(engine, ['worker_result_receipts', 'external_effects', 'features']) == old_receipts
         assert check_dal_schema_version(path)['ok']

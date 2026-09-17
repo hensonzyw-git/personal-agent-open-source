@@ -4,6 +4,9 @@ A prepared step can be claimed once by an admitted worker. A dispatch marker
 is irreversible: an interrupted worker must reconcile the same attempt, never
 create a replacement merely because time elapsed.
 """
+import re
+import hashlib
+import json
 from sqlalchemy import select
 from personal_agent_core.ids import new_id
 from personal_agent_core.manifest import canonical_json
@@ -13,6 +16,8 @@ from personal_agent_dal.storage.timeline_models import (
     DevelopmentRequest as Request, DevelopmentRequestRevision as Revision,
     DevelopmentWorkflow as Workflow, DevelopmentDriverStep as Step,
     DevelopmentGate as Gate, DevelopmentArtifact as Artifact,
+    DevelopmentDecisionReceipt as DecisionReceipt, DevelopmentDecisionRequest as Decision,
+    DevelopmentRoleSnapshot as RoleSnapshot,
     DevelopmentProjectBinding as ProjectBinding, DevelopmentProjectAuthorization as Grant,
 )
 from personal_agent_dal.timeline.requests import digest
@@ -78,6 +83,36 @@ def validate_result(phase, result):
             or any(not isinstance(x,str) or not x.strip() for x in result['findings'])
             or (result['verdict']=='PASS') != (not result['findings'])):
             raise ValueError('RESULT_INVALID')
+    def sha(value):
+        return isinstance(value,str) and re.fullmatch('[a-f0-9]{64}',value) is not None
+    if expected=='research':
+        if (not isinstance(result['sources'],list) or not result['sources']
+            or not isinstance(result['unknowns'],list)
+            or any(not isinstance(x,str) or not x.strip() for x in result['unknowns'])
+            or not sha(result['workspace_receipt_digest'])):
+            raise ValueError('RESULT_INVALID')
+        for source in result['sources']:
+            if (not isinstance(source,dict) or set(source)!={'ref','digest'}
+                or not isinstance(source['ref'],str) or not source['ref'].strip() or not sha(source['digest'])):
+                raise ValueError('RESULT_INVALID')
+    if expected=='design':
+        from personal_agent_dal.timeline.stages import validate_plan
+        if not sha(result['prd_digest']):raise ValueError('RESULT_INVALID')
+        validate_plan(result['plan'])
+    if expected=='review':
+        from personal_agent_dal.timeline.requests import valid_id
+        valid_id(result['reviewed_artifact_id'])
+        if not sha(result['reviewed_digest']):raise ValueError('RESULT_INVALID')
+    if expected=='revision_plan':
+        if (type(result['scope_changed']) is not bool or not isinstance(result['stages'],list)
+            or not result['stages']):raise ValueError('RESULT_INVALID')
+        seen=set()
+        for stage in result['stages']:
+            if (not isinstance(stage,dict) or set(stage)!={'stage_id','revision'}
+                or not isinstance(stage['stage_id'],str) or not stage['stage_id']
+                or type(stage['revision']) is not int or stage['revision']<1
+                or stage['stage_id'] in seen):raise ValueError('RESULT_INVALID')
+            seen.add(stage['stage_id'])
     return result
 
 
@@ -100,11 +135,6 @@ class WorkflowDriver:
         return dict(workflow_id=wf.workflow_id,status=wf.status,phase=wf.phase,reason=reason)
 
     def tick(self, workflow_id):
-        # Resolving immutable configuration does not itself grant launch rights.
-        snapshot=None
-        if self.roles is not None:
-            try:snapshot=self.roles.snapshot(workflow_id=workflow_id)
-            except ValueError:pass
         def work(s):
             wf=s.scalar(select(Workflow).where(Workflow.workflow_id==workflow_id))
             if wf is None:raise ValueError('WORKFLOW_NOT_FOUND')
@@ -119,6 +149,10 @@ class WorkflowDriver:
                 Step.status.in_(('prepared','dispatch_started','result_unknown'))))
             if existing:return dict(workflow_id=workflow_id,status=existing.status,step_id=existing.step_id)
             if wf.phase not in PHASES:return self._block(s,wf,'EXECUTOR_REQUIRED')
+            snapshot=None
+            if self.roles is not None:
+                try:snapshot=self.roles.snapshot(workflow_id=workflow_id,_session=s)
+                except ValueError:pass
             if snapshot is None:return self._block(s,wf,'ROLE_UNAVAILABLE')
             role=PHASES[wf.phase][0]
             revision=s.scalar(select(Revision).where(Revision.request_id==wf.request_id).order_by(Revision.revision.desc()))
@@ -127,8 +161,33 @@ class WorkflowDriver:
                 phase=wf.phase,role=role,request_revision=revision.revision,request=request,
                 workflow_version=wf.version,gate_epoch=gate.epoch,snapshot_digest=snapshot['snapshot_digest'],artifacts=[])
             for artifact in s.scalars(select(Artifact).where(Artifact.workflow_id==workflow_id).order_by(Artifact.kind,Artifact.revision)):
+                body=self.r._open(Artifact,artifact.artifact_id,'sealed_body',artifact.sealed_body)
+                if (not isinstance(body,dict) or not isinstance(body.get('text'),str)
+                    or hashlib.sha256(body['text'].encode()).hexdigest()!=artifact.body_sha256
+                    or digest(body)!=artifact.source_receipt_digest):
+                    raise ValueError('INPUT_INTEGRITY_FAILED')
                 inputs['artifacts'].append(dict(artifact_id=artifact.artifact_id,kind=artifact.kind,
-                    revision=artifact.revision,digest=artifact.body_sha256,source_receipt_digest=artifact.source_receipt_digest))
+                    revision=artifact.revision,digest=artifact.body_sha256,source_receipt_digest=artifact.source_receipt_digest,
+                    body=body))
+            if wf.phase=='design_review':
+                designs=[a for a in inputs['artifacts'] if a['kind']=='design']
+                if not designs:return self._block(s,wf,'REVIEW_SOURCE_REQUIRED')
+                design=s.get(Artifact,designs[-1]['artifact_id'])
+                source=s.get(Step,design.source_step_id)
+                author=s.get(RoleSnapshot,source.snapshot_id) if source and source.snapshot_id else None
+                if author is None:return self._block(s,wf,'REVIEW_SOURCE_REQUIRED')
+                author_body=json.loads(author.body)
+                if digest(author_body)!=author.digest:raise ValueError('INPUT_INTEGRITY_FAILED')
+                if author_body['roles']['planner']['model']==snapshot['roles']['reviewer']['model']:
+                    return self._block(s,wf,'REVIEW_NOT_INDEPENDENT')
+            inputs['human_feedback']=[]
+            for receipt in s.scalars(select(DecisionReceipt).join(Decision).where(
+                Decision.workflow_id==workflow_id).order_by(Decision.version,Decision.decision_id)):
+                feedback=self.r._open(DecisionReceipt,receipt.command_id,'sealed_result',receipt.sealed_result)
+                inputs['human_feedback'].append(dict(decision_id=receipt.decision_id,
+                    command_id=receipt.command_id,decision=feedback['decision'],workflow_version=feedback['workflow_version'],
+                    source_text=feedback['source_text'],feedback=feedback['feedback']))
+            inputs['human_feedback'].sort(key=lambda item:item['workflow_version'])
             project=s.get(ProjectBinding,workflow_id)
             if project:
                 grant=s.get(Grant,project.grant_id)
@@ -171,6 +230,22 @@ class WorkflowDriver:
         if (wf.status!='active' or wf.phase!=step.phase or wf.version!=step.expected_version
             or gate is None or gate.mode!='open' or gate.epoch!=step.gate_epoch):
             raise ValueError('STALE_BINDING')
+        if self.kill_switch():raise ValueError('KILL_SWITCH_ACTIVE')
+        inputs=self.r._open(Step,step.step_id,'sealed_input',step.sealed_input)
+        if digest(inputs)!=step.input_digest:raise ValueError('INPUT_INTEGRITY_FAILED')
+        selected=inputs.get('project')
+        if selected is not None:
+            binding=s.scalar(select(ProjectBinding).where(ProjectBinding.workflow_id==wf.workflow_id))
+            grant=s.scalar(select(Grant).where(Grant.grant_id==selected['grant_id']))
+            if (binding is None or grant is None or grant.revoked or grant.expires_at<=self.r.now()
+                or binding.project_id!=selected['project_id'] or binding.grant_id!=grant.grant_id
+                or binding.grant_version!=grant.version or grant.version!=selected['grant_version']
+                or grant.digest!=selected['grant_digest']):
+                raise ValueError('PROJECT_AUTHORIZATION_REQUIRED')
+            body=self.r._open(Grant,grant.grant_id,'sealed_grant',grant.sealed_grant)
+            if digest(body)!=grant.digest:raise ValueError('INPUT_INTEGRITY_FAILED')
+            if body.get('request_id')!=wf.request_id or 'read' not in body.get('actions',[]):
+                raise ValueError('PROJECT_AUTHORIZATION_REQUIRED')
         return wf,gate
 
     def accept(self,step_id,*,attempt_id,result):

@@ -1322,7 +1322,7 @@ class DalTimelineCommand(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     __table_args__ = (
-        CheckConstraint("status IN ('queued','delivery_unknown','accepted','cancelled','refused')", name='timeline_command_status'),
+        CheckConstraint("status IN ('queued','delivery_unknown','cancelled','accepted','refused')", name='timeline_command_status'),
         CheckConstraint('attempts >= 0', name='timeline_command_attempts'),
         CheckConstraint("status != 'cancelled' OR attempts = 0", name='timeline_cancel_unsent'),
         CheckConstraint("status != 'delivery_unknown' OR attempts > 0", name='timeline_unknown_sent'),

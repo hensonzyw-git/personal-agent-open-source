@@ -11,6 +11,40 @@ from personal_agent_dal.timeline.requests import digest,valid_id
 from personal_agent_dal.storage.timeline_models import DevelopmentStagePlan as Plan,DevelopmentStage as Stage,DevelopmentStageDependency as Edge,DevelopmentDependencySatisfaction as Satisfaction,DevelopmentStageWriter as Writer,DevelopmentWorkflow,DevelopmentGate
 
 
+def validate_plan(body):
+    if not isinstance(body,dict) or set(body)!={'nodes','edges','acceptance'}:raise ValueError('PLAN_INVALID')
+    nodes=body['nodes'];edges=body['edges'];keys=[];assigned=[]
+    if (not isinstance(edges,list) or len(edges)>4096 or not isinstance(body['acceptance'],list)
+        or not body['acceptance'] or any(not isinstance(a,str) or not a.strip() for a in body['acceptance'])):
+        raise ValueError('PLAN_INVALID')
+    if not isinstance(nodes,list) or not 1<=len(nodes)<=64:raise ValueError('PLAN_INVALID')
+    for n in nodes:
+        if not isinstance(n,dict) or set(n)!={'stage_id','revision','goal','acceptance'}:raise ValueError('PLAN_INVALID')
+        valid_id(n['stage_id'])
+        if type(n['revision']) is not int or n['revision']<1 or not isinstance(n['goal'],str) or not n['goal'].strip() or len(n['goal'].encode())>32768:raise ValueError('PLAN_INVALID')
+        if not isinstance(n['acceptance'],list) or not n['acceptance'] or any(not isinstance(a,str) or not a.strip() for a in n['acceptance']):raise ValueError('PLAN_INVALID')
+        keys.append((n['stage_id'],n['revision']));assigned.extend(n['acceptance'])
+    if len({k[0] for k in keys})!=len(keys) or sorted(assigned)!=sorted(body['acceptance']) or len(set(assigned))!=len(assigned):raise ValueError('PLAN_INVALID')
+    adjacency={k:[] for k in keys};pairs=set()
+    for e in edges:
+        if not isinstance(e,dict) or set(e)!={'upstream_id','upstream_revision','downstream_id','downstream_revision'}:raise ValueError('PLAN_INVALID')
+        if (any(not isinstance(e[k],str) for k in ('upstream_id','downstream_id'))
+            or any(type(e[k]) is not int or e[k]<1 for k in ('upstream_revision','downstream_revision'))):
+            raise ValueError('PLAN_INVALID')
+        a=(e['upstream_id'],e['upstream_revision']);b=(e['downstream_id'],e['downstream_revision'])
+        if a not in adjacency or b not in adjacency or (a,b) in pairs:raise ValueError('PLAN_INVALID')
+        pairs.add((a,b));adjacency[a].append(b)
+    visiting=set();done=set()
+    def visit(k):
+        if k in visiting:raise ValueError('PLAN_CYCLE')
+        if k in done:return
+        visiting.add(k)
+        for child in adjacency[k]:visit(child)
+        visiting.remove(k);done.add(k)
+    for k in keys:visit(k)
+    return body
+
+
 class StageService:
     def __init__(self,requests):self.r=requests
 
@@ -20,30 +54,9 @@ class StageService:
     def freeze(self,*,workflow_id,revision,design_digest,review_digest,body):
         for sha in (design_digest,review_digest):
             if not re.fullmatch('[a-f0-9]{64}',sha):raise ValueError('ARTIFACT_INVALID')
-        if type(revision) is not int or revision<1 or set(body)!={'nodes','edges','acceptance'}:raise ValueError('PLAN_INVALID')
-        nodes=body['nodes'];edges=body['edges'];keys=[];assigned=[]
-        if not isinstance(nodes,list) or not 1<=len(nodes)<=64:raise ValueError('PLAN_INVALID')
-        for n in nodes:
-            if set(n)!={'stage_id','revision','goal','acceptance'}:raise ValueError('PLAN_INVALID')
-            valid_id(n['stage_id'])
-            if type(n['revision']) is not int or n['revision']<1 or not isinstance(n['goal'],str) or not n['goal'].strip() or len(n['goal'].encode())>32768:raise ValueError('PLAN_INVALID')
-            if not isinstance(n['acceptance'],list) or not n['acceptance'] or any(not isinstance(a,str) for a in n['acceptance']):raise ValueError('PLAN_INVALID')
-            keys.append((n['stage_id'],n['revision']));assigned.extend(n['acceptance'])
-        if len(set(keys))!=len(keys) or sorted(assigned)!=sorted(body['acceptance']) or len(set(assigned))!=len(assigned):raise ValueError('PLAN_INVALID')
-        adjacency={k:[] for k in keys};pairs=set()
-        for e in edges:
-            if set(e)!={'upstream_id','upstream_revision','downstream_id','downstream_revision'}:raise ValueError('PLAN_INVALID')
-            a=(e['upstream_id'],e['upstream_revision']);b=(e['downstream_id'],e['downstream_revision'])
-            if a not in adjacency or b not in adjacency or (a,b) in pairs:raise ValueError('PLAN_INVALID')
-            pairs.add((a,b));adjacency[a].append(b)
-        visiting=set();done=set()
-        def visit(k):
-            if k in visiting:raise ValueError('PLAN_CYCLE')
-            if k in done:return
-            visiting.add(k)
-            for child in adjacency[k]:visit(child)
-            visiting.remove(k);done.add(k)
-        for k in keys:visit(k)
+        if type(revision) is not int or revision<1:raise ValueError('PLAN_INVALID')
+        validate_plan(body)
+        nodes,edges=body['nodes'],body['edges']
         sha=digest(body)
         def work(s):
             old=s.scalar(select(Plan).where(Plan.workflow_id==workflow_id,Plan.revision==revision))
