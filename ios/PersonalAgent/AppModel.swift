@@ -18,6 +18,8 @@ final class AppModel {
     }
 
     var phase: Phase = .loading
+    var pendingDevelopmentEventID: String?
+    var developmentNavigationID = UUID()
     /// Where the backend is. The default is the production entry behind TLS
     /// (`DEV-033`); the Simulator's `http://127.0.0.1:8810` is typed by hand
     /// for local runs. A fresh install must default to the real server: a
@@ -109,6 +111,25 @@ final class AppModel {
         } catch {
             lastError = describe(error)
         }
+    }
+
+    func developmentRoles() async throws -> DevelopmentRoles {
+        guard let session else { throw AgentClientError.unauthenticated }
+        return try await session.developmentRoles()
+    }
+    func developmentTask(id: String) async throws -> DevelopmentTaskDetail {
+        guard let session else { throw AgentClientError.unauthenticated }
+        return try await session.developmentTask(id: id)
+    }
+
+    func developmentTasks(filter: String, cursor: String?) async throws -> DevelopmentTaskPage {
+        guard let session else { throw AgentClientError.unauthenticated }
+        return try await session.developmentTasks(filter: filter, cursor: cursor)
+    }
+
+    func developmentDocument(id: String) async throws -> DevelopmentDocument {
+        guard let session else { throw AgentClientError.unauthenticated }
+        return try await session.developmentDocument(id: id)
     }
 
     func refresh() async {
@@ -223,6 +244,14 @@ final class AppModel {
             }
         }
         delegate.pushCoordinator = pushCoordinator
+        delegate.developmentNotification = { [weak self] id in
+            self?.pendingDevelopmentEventID = id
+            self?.developmentNavigationID = UUID()
+        }
+        if let id = delegate.pendingDevelopmentEventID {
+            pendingDevelopmentEventID = id
+            delegate.pendingDevelopmentEventID = nil
+        }
         // The foreground mirror trigger (review R5): iOS's `didBecomeActive`
         // is the one signal SwiftUI does not observe, and a foreground return
         // is when the calendar may have changed under us. It degrades through
@@ -427,6 +456,8 @@ final class AppModel {
                     self?.describe(error) ?? String(describing: error)
                 }
             )
+            chat?.loadDevelopmentContext = { id in try await session.developmentReplyContext(eventID: id) }
+            chat?.loadDevelopmentDocument = { id in try await session.developmentDocument(id: id) }
             // The pre-send mirror top-up (review R5): the same engine the
             // refresh path uses, so the staleness gate lives in one place.
             // The handle bounds what the send path waits (F8): the sync runs

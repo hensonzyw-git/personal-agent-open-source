@@ -24,6 +24,7 @@ final class ChatModel {
     /// Oldest-to-newest, exactly as the server ordered it.
     var events: [TimelineEvent] = []
     var hasOlder = false
+    var focusedDevelopmentEventID: String?
     var draft: String = ""
     /// The photo has only been prepared locally.  It is not a Timeline event,
     /// not a server object and not an authorization to send until the user taps
@@ -127,6 +128,9 @@ final class ChatModel {
         while acceptanceWork > 0 { try? await Task.sleep(for: .milliseconds(50)) }
     }
 
+    var developmentReplyContext: DevelopmentReplyContext?
+    var loadDevelopmentContext: ((String) async throws -> DevelopmentReplyContext)?
+    var loadDevelopmentDocument: ((String) async throws -> DevelopmentDocument)?
     private let timeline: ChatTimeline
     private let mediaUploads: MediaUploadCoordinator
     private let mediaBackend: any MediaUploadBackend
@@ -269,6 +273,22 @@ final class ChatModel {
     /// durable slots: it appends older history and makes no claim about current
     /// state, so `refresh()` — not this — is the gesture that means "show me
     /// everything as it is now".
+    func focusDevelopmentEvent(_ id: String) async {
+        focusedDevelopmentEventID = nil
+        await refresh()
+        for _ in 0..<20 {
+            if events.contains(where: { $0.eventID == id }) {
+                focusedDevelopmentEventID = id
+                return
+            }
+            guard hasOlder, !Task.isCancelled else { break }
+            let count = events.count
+            await loadOlder()
+            if count == events.count { break }
+        }
+        lastError = "通知对应的消息暂未加载，请在 Timeline 继续加载历史消息。"
+    }
+
     func loadOlder() async {
         guard !acceptanceStopping else { return }
         acceptanceWork += 1
@@ -301,6 +321,11 @@ final class ChatModel {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let photo = preparedPhoto
         guard !text.isEmpty || photo != nil else { return }
+        if photo != nil && developmentReplyContext != nil {
+            lastError = "回复开发文档时请发送文字；图片可以另发一条消息。"
+            return
+        }
+        let replyContext = developmentReplyContext
         busy = true
         defer { busy = false }
         // Consume this draft synchronously. The field remains editable while
@@ -336,9 +361,11 @@ final class ChatModel {
                 receipt = try await timeline.send(
                     text: text,
                     clarificationOf: clarificationOf,
-                    startNewSession: startNewSession
+                    startNewSession: startNewSession,
+                    dalReplyContext: replyContext
                 )
             }
+            developmentReplyContext = nil
             answering = nil
             startNewTopic = false
             liveReceipt = receipt

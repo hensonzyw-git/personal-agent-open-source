@@ -23,11 +23,11 @@ class TimelineTransport(FixedDalTransport):
                 except (ValueError,UnicodeError,RecursionError):raise ValueError('DAL_RESPONSE_INVALID') from None
 
     def call(self, *, operation, request_id, subject, body):
-        if operation not in ('submit','request_detail','request_list'):raise ValueError('INVALID_ARGUMENT')
-        scope='dal.request' if operation=='submit' else 'dal.read'
+        if operation not in ('submit','request_detail','request_list','events_read','events_ack','artifact_read','roles_read','decision'):raise ValueError('INVALID_ARGUMENT')
+        scope=('dal.request' if body['payload']['kind']=='project_selection' else 'dal.'+body['payload']['kind']+'.decide') if operation=='decision' else 'dal.events' if operation.startswith('events_') else 'dal.request' if operation=='submit' else 'dal.read'
         request=envelope(key=self.key,kid=self.kid,issuer=self.issuer,audience=self.audience,
             operation=operation,request_id=request_id,subject=subject,scope=scope,body=body)
-        response=self._post('/internal/development/commands' if operation=='submit' else '/internal/development/query',request)
+        response=self._post('/internal/development/events' if operation.startswith('events_') else '/internal/development/commands' if operation in ('submit','decision') else '/internal/development/query',request)
         try:
             claims,result=verify_envelope(response,keys=self.trusted_keys,issuer='dal-timeline',audience='pa-timeline')
             from personal_agent_dal.timeline.requests import digest
@@ -44,6 +44,9 @@ class TimelineTransport(FixedDalTransport):
                 if receipt['schema_version']!='dal.timeline/1.0' or receipt['status']!='accepted_not_started' or receipt['feature_id'] is not None:raise ValueError
                 valid_id(receipt['request_id'])
                 if type(receipt['version']) is not int or receipt['version']<1 or result['workflow_version']!=receipt['version']:raise ValueError
+            if operation=='decision' and (result.get('command_id')!=request_id or result.get('decision_id')!=body['payload']['decision_id'] or result.get('status') not in ('accepted','refused')):raise ValueError
+            if operation=='decision' and result.get('status')=='refused':
+                if set(result)!={'command_id','decision_id','status','reason'} or result['reason'] not in ('STALE_BINDING','SCOPE_REQUIRED','AMBIGUOUS_TARGET','INPUT_NOT_AUTHORIZED','MESSAGE_ALREADY_CONSUMED','DELIVERY_PROBE_REQUIRED'):raise ValueError
             return result
         except (ValueError,TypeError,KeyError):raise ValueError('DAL_RESPONSE_INVALID') from None
 

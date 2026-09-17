@@ -31,8 +31,9 @@ public enum ClientWireVersion {
     /// The IR's `CLIENT_WIRE_VERSION_HEADER`. Pinned literally here because the
     /// constant lives in Python; the server reads the same name.
     public static let header = "X-Client-Wire-Version"
+    /// Version 6 adds durable, signed development document reply context.
     /// The version this build implements, and therefore declares.
-    public static let version = 5
+    public static let version = 6
     /// What travels on the wire. A string, because that is what a header is.
     public static let value = String(version)
 }

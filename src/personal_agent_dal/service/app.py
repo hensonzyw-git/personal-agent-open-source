@@ -663,6 +663,8 @@ def create_app(
     from personal_agent_dal.timeline.transport import mount_routes as mount_timeline_routes
     timeline = load_endpoint(timeline_config_path, engine=engine, kill_switch=lambda: service.kill_switch) if timeline_config_path else None
     mount_timeline_routes(app, timeline)
+    from personal_agent_dal.timeline.operator import mount_routes as mount_timeline_operator
+    mount_timeline_operator(app,timeline,service)
     from personal_agent_dal.service.resume_routes import mount_routes
     mount_routes(app, engine, service, resume_config, execution_config)
 

@@ -53,6 +53,7 @@ def chat_request_fingerprint(
     clarification_of: str | None = None,
     start_new_session: bool = False,
     parts: Sequence[ChatPart] = (),
+    dal_reply_context: dict[str, str] | None = None,
 ) -> str:
     """A canonical fingerprint of one chat request's meaning.
 
@@ -83,6 +84,8 @@ def chat_request_fingerprint(
         "clarification_of": clarification_of,
         "start_new_session": start_new_session,
     }
+    if dal_reply_context is not None:
+        payload["dal_reply_context"] = dal_reply_context
     if parts:
         payload["parts"] = [_fingerprint_part(part) for part in parts]
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()

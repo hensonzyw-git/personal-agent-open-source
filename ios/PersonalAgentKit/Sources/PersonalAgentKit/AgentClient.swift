@@ -46,6 +46,26 @@ public struct AgentClient: Sendable {
         return URLSession(configuration: configuration)
     }
 
+    public func developmentRoles(token: String) async throws -> DevelopmentRoles {
+        try await send(method: "GET", path: "/v1/dal/roles", token: token, as: DevelopmentRoles.self)
+    }
+    public func developmentTask(id: String, token: String) async throws -> DevelopmentTaskDetail {
+        guard id.range(of: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", options: .regularExpression) != nil else { throw AgentClientError.malformedResponse }
+        return try await send(method: "GET", path: "/v1/dal/tasks/" + id, token: token, as: DevelopmentTaskDetail.self)
+    }
+
+    public func developmentTasks(filter: String = "ongoing", cursor: String? = nil, token: String) async throws -> DevelopmentTaskPage {
+        var query = [URLQueryItem(name: "filter", value: filter)]
+        if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+        return try await send(method: "GET", path: "/v1/dal/tasks", token: token, query: query, as: DevelopmentTaskPage.self)
+    }
+
+    public func developmentArtifact(id: String, offset: Int, token: String) async throws -> DevelopmentArtifactPage {
+        guard id.range(of: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", options: .regularExpression) != nil else { throw AgentClientError.malformedResponse }
+        return try await send(method: "GET", path: "/v1/dal/artifacts/" + id, token: token,
+            query: [URLQueryItem(name: "offset", value: String(offset))], as: DevelopmentArtifactPage.self)
+    }
+
     // --- unauthenticated: enrollment and tokens ------------------------------
 
     public func claimEnrollment(
@@ -149,10 +169,19 @@ public struct AgentClient: Sendable {
         text: String,
         clarificationOf: String? = nil,
         startNewSession: Bool = false,
+        dalReplyContext: DevelopmentReplyContext? = nil,
         idempotencyKey: String,
         token: String
     ) async throws -> OperationReceipt {
-        try await send(
+        if let context = dalReplyContext {
+            var body: [String: Any] = ["conversation_id": conversationID, "text": text,
+                "start_new_session": startNewSession,
+                "dal_reply_context": ["event_id": context.eventID, "token": context.token]]
+            if let clarificationOf { body["clarification_of"] = clarificationOf }
+            return try await send(method: "POST", path: "/v1/chat/messages", jsonBody: body,
+                token: token, headers: ["Idempotency-Key": idempotencyKey], accepting: [200, 202], as: OperationReceipt.self)
+        }
+        return try await send(
             method: "POST",
             path: "/v1/chat/messages",
             body: [
@@ -1003,5 +1032,11 @@ public enum AgentClientError: Error, Equatable {
             let code = error["code"] as? String
         else { return nil }
         return code
+    }
+}
+
+extension AgentClient {
+    public func developmentReplyContext(eventID: String, token: String) async throws -> DevelopmentReplyContext {
+        try await send(method: "GET", path: "/v1/dal/events/\(eventID)/context", token: token, as: DevelopmentReplyContext.self)
     }
 }

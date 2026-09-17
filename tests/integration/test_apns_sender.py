@@ -587,3 +587,22 @@ def test_the_review_cli_wires_the_sender_rather_than_leaving_a_seam() -> None:
     # and the review would have no entry point once the page is gone.
     assert "keyring" in keywords
     assert "session_manager" in keywords
+
+
+def test_development_push_is_opaque_and_scope_revocation_prevents_network(config,sessions,keyring):
+    sent=[]
+    def handler(request):
+        sent.append(request)
+        return httpx2.Response(200,headers={'apns-id':'synthetic-notification'})
+    sender=_sender(config,sessions,keyring,handler)
+    with sessions() as session,session.begin():session.get(Device,DEVICE_ID).scopes='["dal.read"]'
+    sender.send_development(DEVICE_ID,event_id='synthetic-event',count=2)
+    payload=json.loads(sent[0].content)
+    assert set(payload)=={'aps','development_event_id'}
+    assert payload['development_event_id']=='synthetic-event'
+    assert '2' in payload['aps']['alert']['body']
+    assert sent[0].headers['apns-collapse-id']=='development-timeline'
+    with sessions() as session,session.begin():session.get(Device,DEVICE_ID).scopes='[]'
+    with pytest.raises(PushSendError):sender.send_development(DEVICE_ID,event_id='synthetic-event',count=2)
+    assert len(sent)==1
+    sender.close()

@@ -11,7 +11,7 @@ from personal_agent_dal.timeline.transport import TimelineEndpoint
 
 def load_endpoint(path,*,engine,kill_switch=lambda:False):
     config=json.loads(_read_bridge_file(path,kind='TIMELINE_CONFIG'))
-    if set(config)!={'schema_version','data_key_file','data_kid','cursor_key_file','signing_key_file','kid','pa_public_keys'} or config['schema_version']!='dal.timeline-service/1.0':
+    if set(config)-{'role_registry_file'}!={'schema_version','data_key_file','data_kid','cursor_key_file','signing_key_file','kid','pa_public_keys'} or config['schema_version']!='dal.timeline-service/1.0':
         raise ValueError('TIMELINE_CONFIG_INVALID')
     data=_read_bridge_file(config['data_key_file'],kind='TIMELINE_DATA_KEY',limit=32)
     cursor=_read_bridge_file(config['cursor_key_file'],kind='TIMELINE_CURSOR_KEY',limit=32)
@@ -31,4 +31,10 @@ def load_endpoint(path,*,engine,kill_switch=lambda:False):
             raise ValueError('TIMELINE_KEYS_NOT_SEPARATE')
         keys[kid]=key
     requests=RequestService(engine,keyring=KeyRing([KeyEntry(kid=config['data_kid'],key=data,state='active')],service='dal'),cursor_key=cursor)
-    return TimelineEndpoint(requests,trusted_keys=keys,signing_key=private,kid=config['kid'],kill_switch=kill_switch)
+    endpoint=TimelineEndpoint(requests,trusted_keys=keys,signing_key=private,kid=config['kid'],kill_switch=kill_switch)
+    if config.get('role_registry_file'):
+        from personal_agent_dal.timeline.roles import RoleService
+        registry=json.loads(_read_bridge_file(config['role_registry_file'],kind='ROLE_REGISTRY'))
+        if not isinstance(registry,list) or not registry or len(registry)>128:raise ValueError('ROLE_REGISTRY_INVALID')
+        endpoint.roles=RoleService(requests,registry)
+    return endpoint

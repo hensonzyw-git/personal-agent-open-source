@@ -160,10 +160,15 @@ class RequestService:
             repository_id = s.scalar(select(Feature.repository_id).where(Feature.feature_id == workflow.feature_id))
             if repository_id not in self.allowed_repository_ids:
                 raise TimelineRefusal('REQUEST_NOT_FOUND')
+        from personal_agent_dal.storage.timeline_models import DevelopmentArtifact, DevelopmentDecisionRequest, DevelopmentStage, DevelopmentStagePlan
+        artifacts=[dict(artifact_id=a.artifact_id,kind=a.kind,revision=a.revision,body_sha256=a.body_sha256) for a in s.scalars(select(DevelopmentArtifact).where(DevelopmentArtifact.workflow_id==workflow.workflow_id).order_by(DevelopmentArtifact.kind,DevelopmentArtifact.revision))]
+        decisions=[dict(decision_id=d.decision_id,kind=d.kind,version=d.version,expires_at=d.expires_at.isoformat()) for d in s.scalars(select(DevelopmentDecisionRequest).where(DevelopmentDecisionRequest.workflow_id==workflow.workflow_id,DevelopmentDecisionRequest.status=='pending',DevelopmentDecisionRequest.expires_at>self.now()))]
+        stages=[dict(stage_id=stage.stage_id,revision=stage.revision,state=stage.state,state_version=stage.state_version) for stage in s.scalars(select(DevelopmentStage).join(DevelopmentStagePlan).where(DevelopmentStagePlan.workflow_id==workflow.workflow_id).order_by(DevelopmentStagePlan.revision,DevelopmentStage.ordinal))]
         return dict(request_id=request.request_id, request_version=request.version,
             version=workflow.version, status=workflow.status, text=body['text'],
             created_at=request.created_at.isoformat(), feature_id=workflow.feature_id,
-            phase=workflow.phase, execution_started=False if workflow.phase == 'clarify' else None)
+            phase=workflow.phase, artifacts=artifacts, pending_decisions=decisions, stages=stages,
+            execution_started=False if workflow.phase == 'clarify' else None)
 
     def _task_items(self, s, view):
         from personal_agent_dal.storage.models import Feature
@@ -184,6 +189,7 @@ class RequestService:
                     continue
             item = self._detail(s, request)
             text = item.pop('text')
+            for field in ('artifacts','pending_decisions','stages'):item.pop(field,None)
             item.update(task_id=workflow.workflow_id if workflow else request.request_id,
                 kind='workflow' if workflow else 'request', summary=text[:120],summary_truncated=len(text)>120)
             if workflow is not None:

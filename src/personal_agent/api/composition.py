@@ -776,6 +776,9 @@ async def agent_service(
             dal_resume = load_bridge(config.dal_resume_config, session_factory=sessions, token_ring=token_ring) if config.dal_resume_config else None
             from personal_agent.api.dal_timeline_client import load_bridge as load_timeline_bridge
             dal_timeline = load_timeline_bridge(config.dal_timeline_config, session_factory=sessions, keyring=keyring, token_ring=token_ring) if config.dal_timeline_config else None
+            if dal_timeline is not None:
+                from personal_agent.api.apns import build_push_sender
+                dal_timeline.push_sender = build_push_sender(session_factory=sessions,keyring=keyring)
         except (ValueError, TypeError, KeyError, OSError):
             raise CompositionError('DAL resume configuration refused') from None
         registry = ConnectorRegistry()
@@ -1100,6 +1103,8 @@ async def agent_service(
                 # task immediately, or let its bounded current scan finish.
                 recovery_stop.set()
                 await recovery_task
+            if dal_timeline is not None and dal_timeline.push_sender is not None:
+                dal_timeline.push_sender.close()
             await control.aclose()
             await client.close()
 

@@ -1322,9 +1322,59 @@ class DalTimelineCommand(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     __table_args__ = (
-        CheckConstraint("status IN ('queued','delivery_unknown','accepted','cancelled')", name='timeline_command_status'),
+        CheckConstraint("status IN ('queued','delivery_unknown','accepted','cancelled','refused')", name='timeline_command_status'),
         CheckConstraint('attempts >= 0', name='timeline_command_attempts'),
         CheckConstraint("status != 'cancelled' OR attempts = 0", name='timeline_cancel_unsent'),
         CheckConstraint("status != 'delivery_unknown' OR attempts > 0", name='timeline_unknown_sent'),
-        CheckConstraint("(status = 'accepted' AND sealed_receipt IS NOT NULL AND attempts > 0) OR (status != 'accepted' AND sealed_receipt IS NULL)", name='timeline_receipt'),
+        CheckConstraint("(status IN ('accepted','refused') AND sealed_receipt IS NOT NULL AND attempts > 0) OR (status NOT IN ('accepted','refused') AND sealed_receipt IS NULL)", name='timeline_receipt'),
+    )
+
+
+class DalConsumerCursor(Base):
+    __tablename__='dal_consumer_cursors'
+    consumer_id: Mapped[str]=mapped_column(Text,primary_key=True)
+    stream_id: Mapped[str]=mapped_column(Text,nullable=False)
+    received_seq: Mapped[int]=mapped_column(Integer,nullable=False)
+    acked_seq: Mapped[int]=mapped_column(Integer,nullable=False)
+    tail_digest: Mapped[str]=mapped_column(Text,nullable=False)
+    version: Mapped[int]=mapped_column(Integer,nullable=False)
+    __table_args__=(CheckConstraint("consumer_id = 'pa-timeline' AND 0 <= acked_seq AND acked_seq <= received_seq AND version >= 1",name='dal_cursor_order'),)
+
+
+class DalEventInbox(Base):
+    __tablename__='dal_event_inbox'
+    event_id: Mapped[str]=mapped_column(Text,primary_key=True)
+    stream_id: Mapped[str]=mapped_column(Text,nullable=False)
+    seq: Mapped[int]=mapped_column(Integer,nullable=False)
+    digest: Mapped[str]=mapped_column(Text,nullable=False)
+    workflow_id: Mapped[str]=mapped_column(Text,nullable=False)
+    timeline_event_id: Mapped[str]=mapped_column(ForeignKey('conversation_events.event_id',ondelete='RESTRICT'),nullable=False)
+    __table_args__=(UniqueConstraint('stream_id','seq',name='dal_inbox_sequence'),)
+
+
+class DalContextBinding(Base):
+    __tablename__='dal_context_bindings'
+    context_id: Mapped[str]=mapped_column(Text,primary_key=True)
+    device_id: Mapped[str]=mapped_column(ForeignKey('devices.device_id',ondelete='RESTRICT'),nullable=False)
+    decision_id: Mapped[str]=mapped_column(Text,nullable=False)
+    event_id: Mapped[str]=mapped_column(ForeignKey('conversation_events.event_id',ondelete='RESTRICT'),nullable=False)
+    binding_digest: Mapped[str]=mapped_column(Text,nullable=False)
+    sealed_context: Mapped[dict[str,Any]]=mapped_column(EncryptedEnvelope,nullable=False)
+    expires_at: Mapped[datetime]=mapped_column(UtcTimestamp,nullable=False)
+    consumed: Mapped[int]=mapped_column(Integer,nullable=False)
+    __table_args__=(UniqueConstraint('device_id','decision_id',name='dal_context_device_decision'),)
+
+
+class DalNotification(Base):
+    """Opaque event references only; lock-screen text never contains artifacts."""
+    __tablename__ = 'dal_notifications'
+    notification_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey('devices.device_id'), nullable=False)
+    event_id: Mapped[str] = mapped_column(ForeignKey('conversation_events.event_id'), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    __table_args__ = (
+        UniqueConstraint('device_id', 'event_id', name='dal_notification_delivery'),
+        CheckConstraint("status IN ('pending','sending','provider_accepted','undeliverable') AND attempts >= 0", name='dal_notification_state'),
     )

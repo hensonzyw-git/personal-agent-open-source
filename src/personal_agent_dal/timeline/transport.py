@@ -19,12 +19,48 @@ class Claims(Closed):
     iat: StrictInt
     exp: StrictInt
     domain: Literal['dal.timeline-command/1.0','dal.timeline-response/1.0']
-    operation: Literal['submit','request_detail','request_list']
+    operation: Literal['submit','request_detail','request_list','events_read','events_ack','artifact_read','roles_read','decision']
     request_id: Id
     subject: Id
-    scope: Literal['dal.read','dal.request']
+    scope: Literal['dal.read','dal.request','dal.events','dal.prd.decide','dal.delivery.decide']
     body_sha256: Digest
     request_body_sha256: Digest | None = None
+
+
+class DecisionPayload(Closed):
+    decision_id: Id
+    binding_digest: Digest
+    kind: Literal['prd','project_selection','delivery']
+    text: str
+
+
+class DecisionCommand(Closed):
+    schema_version: Literal['dal.timeline/1.0']
+    command_id: Id
+    source_message_ref: Id
+    command_kind: Literal['decision']
+    payload: DecisionPayload
+
+
+class EventRead(Closed):
+    after_seq: StrictInt = 0
+    limit: StrictInt = 100
+    stream_id: Id | None = None
+
+
+class EventAck(Closed):
+    stream_id: Id
+    through_seq: StrictInt
+    tail_digest: Digest
+
+
+class ArtifactRead(Closed):
+    artifact_id: Id
+    offset: StrictInt = 0
+
+
+class RolesRead(Closed):
+    pass
 
 
 class SubmitPayload(Closed):
@@ -69,7 +105,9 @@ def verify_envelope(value, *, keys,issuer,audience,now=None):
         if expected_domain == 'dal.timeline-response/1.0' and claims['request_body_sha256'] is None: raise ValueError
         if claims['exp']-claims['iat']>120 or claims['jti']!=claims['request_id']:
             raise ValueError
-        if claims['body_sha256']!=digest(value['body']) or (not claims['subject'].startswith('device:') or len(claims['subject']) <= 7):
+        service_event = claims['operation'] in ('events_read','events_ack')
+        identity_ok = claims['subject']=='service:pa-timeline' if service_event else (claims['subject'].startswith('device:') and len(claims['subject'])>7)
+        if claims['body_sha256']!=digest(value['body']) or not identity_ok:
             raise ValueError
     except (ValueError,TypeError):
         raise TimelineRefusal('ASSERTION_INVALID') from None
@@ -79,18 +117,31 @@ def verify_envelope(value, *, keys,issuer,audience,now=None):
 class TimelineEndpoint:
     def __init__(self,requests,*,trusted_keys,signing_key,kid,kill_switch=lambda:False):
         self.requests,self.trusted_keys=requests,trusted_keys
+        from personal_agent_dal.timeline.roles import RoleService
+        self.roles=RoleService(requests,[])
         self.signing_key,self.kid,self.kill_switch=signing_key,kid,kill_switch
 
     def dispatch(self,value,*,command):
         claims,body=verify_envelope(value,keys=self.trusted_keys,issuer='pa-timeline',audience='dal-timeline')
         request_digest=digest(body)
         operation=claims['operation']
-        if command!=(operation=='submit'):
+        if command!=(operation in ('submit','decision')):
             raise TimelineRefusal('SCOPE_REQUIRED')
-        expected='dal.request' if command else 'dal.read'
+        decision_body=DecisionCommand.model_validate(body) if operation=='decision' else None
+        expected=('dal.request' if decision_body.payload.kind=='project_selection' else 'dal.'+decision_body.payload.kind+'.decide') if decision_body else 'dal.events' if operation in ('events_read','events_ack') else 'dal.request' if command else 'dal.read'
         if claims['scope']!=expected:
             raise TimelineRefusal('SCOPE_REQUIRED')
-        if command:
+        if operation in ('events_read','events_ack'):
+            from personal_agent_dal.timeline.events import EventStream
+            stream=EventStream(self.requests)
+            result=stream.read(**EventRead.model_validate(body).model_dump()) if operation=='events_read' else stream.ack(**EventAck.model_validate(body).model_dump())
+        elif operation=='decision':
+            if decision_body.command_id!=claims['request_id']:raise TimelineRefusal('ASSERTION_INVALID')
+            from personal_agent_dal.timeline.decisions import DecisionService
+            result=DecisionService(self.requests).process(command_id=decision_body.command_id,
+                source_message_ref=decision_body.source_message_ref,subject=claims['subject'],
+                decision_id=decision_body.payload.decision_id,binding_digest=decision_body.payload.binding_digest,text=decision_body.payload.text,expected_kind=decision_body.payload.kind)
+        elif command:
             if self.kill_switch(): raise TimelineRefusal('DAL_UNAVAILABLE')
             body=Submit.model_validate(body)
             if body.command_id!=claims['request_id']:raise TimelineRefusal('ASSERTION_INVALID')
@@ -99,6 +150,13 @@ class TimelineEndpoint:
             result=dict(schema_version='dal.timeline/1.0',command_id=body.command_id,
                 receipt_id='receipt:'+digest(body.command_id),status='accepted',
                 workflow_version=result['version'],request=result)
+        elif operation=='artifact_read':
+            from personal_agent_dal.timeline.artifacts import ArtifactService
+            body=ArtifactRead.model_validate(body)
+            result=ArtifactService(self.requests).read(body.artifact_id,offset=body.offset)
+        elif operation=='roles_read':
+            RolesRead.model_validate(body)
+            result=self.roles.resolve()
         elif operation=='request_detail':
             body=Detail.model_validate(body)
             result=self.requests.detail(body.request_id)
@@ -144,4 +202,8 @@ def mount_routes(app,endpoint):
 
     @app.post('/internal/development/query')
     async def query(request:Request):
+        return await handle(request,False)
+
+    @app.post('/internal/development/events')
+    async def events(request:Request):
         return await handle(request,False)

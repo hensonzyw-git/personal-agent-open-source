@@ -72,6 +72,12 @@ class DurableRunHost:
             self.specs.append(RunToolSpec('dal_submit_request','dal.submit_request','write',
                 '登记当前用户消息中的开发需求，尚不启动开发。Host 保存用户原文；不能用于审批、授权、修改旧任务或查询进度。',
                 obj({'arguments':obj({}),'task':TASK,'write_source_refs':REFS},['arguments','task'])))
+        if deps.dal_timeline is not None and 'dal.read' in scopes and 'dal.read' in auth.scopes:
+            from personal_agent.runtime.run_catalog import obj, TASK
+            from personal_agent.runtime.run_tools import RunToolSpec
+            self.specs.append(RunToolSpec('dal_query_progress','dal.query_progress','read',
+                '查询所有正在进行的开发任务。服务端完整分页，直接在 Timeline 展示每项真实阶段和状态，不由模型筛选。',
+                obj({'arguments':obj({}),'task':TASK})))
         self.evidence=EvidenceCatalog(); self.results=[]; self.candidates={}; self.format_error=None; self.pending_metadata=None; self.read_failed=False
         self.model_factory=model_factory
         self._discover(0)
@@ -304,6 +310,32 @@ class DurableRunHost:
                 self.repo.finish(self.lease,answer,now_ms=self.now(),event_writer=self.event_writer,close_source=False)
                 return ToolResult(answer,stop=True)
             return ToolResult(self.results[-1])
+        if name == 'dal.query_progress':
+            if self.deps.dal_timeline is None:raise RunStateError('dal_unavailable')
+            if len(self.accepted_batch_ids)!=1:raise RunStateError('dal_progress_requires_exclusive_read')
+            request={'tool':name,'arguments':{}}
+            result=self.repo.cached_read(self.operation_id,request)
+            if result is None:
+                self.repo.reserve_read(self.lease,call.call_id,request,now_ms=self.now())
+                result=await asyncio.to_thread(self.deps.dal_timeline.progress,self.auth)
+                self.repo.evidence_step(self.lease,call.call_id,result,now_ms=self.now())
+            count=len(result['items'])
+            summary=('当前没有正在进行的开发任务。' if count==0 else f'当前共有 {count} 个正在进行的开发任务，进度如下。') if result['complete'] else f'已读取 {count} 项开发进度，查询尚未完成；请稍后继续查询。'
+            answer={'version':2,'kind':'conversation','task_status':'completed' if result['complete'] else 'waiting',
+                'coverage':'complete' if result['complete'] else 'partial','text':summary,'evidence':[]}
+            def writer(session,outcome):
+                from personal_agent.api import events
+                self.deps.dal_timeline._identity(session,self.auth,'dal.read')
+                sid=self.deps.session_manager.system_event_session(session,conversation_id=self.payload.conversation_id,now=self.deps.now())
+                for item in result['items']:
+                    events.append_event(session,self.deps.keyring,conversation_id=self.payload.conversation_id,session_id=sid,
+                        turn_id=self.anchor.turn_id,event_type='development_update',operation_id=None,now=self.deps.now(),
+                        content={'schema_version':'dal.timeline/1.0','task_id':item['task_id'],'kind':'progress',
+                            'text':item['summary'],'status':item['status'],'phase':item['phase'],'source_version':item['version'],
+                            'snapshot':result['snapshot'],'complete':result['complete']})
+                if self.event_writer:self.event_writer(session,outcome)
+            self.repo.finish(self.lease,answer,now_ms=self.now(),event_writer=writer,metadata=self.pending_metadata,close_source=result['complete'])
+            return ToolResult(answer,stop=True)
         if name == 'dal.submit_request':
             if self.deps.dal_timeline is None:raise RunStateError('dal_unavailable')
             # Only the present user message may create this request. Neither

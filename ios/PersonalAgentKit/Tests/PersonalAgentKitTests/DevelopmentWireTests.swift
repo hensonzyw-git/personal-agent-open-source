@@ -1,0 +1,49 @@
+import Foundation
+import Testing
+import CryptoKit
+@testable import PersonalAgentKit
+
+@Suite("Development Timeline contracts")
+struct DevelopmentWireTests {
+    @Test func unknownStateStaysUnknown() {
+        #expect(DevelopmentState.label(phase: "future", status: "active").contains("未知"))
+        #expect(DevelopmentState.label(phase: "accepted", status: "completed") == "已验收")
+    }
+    @Test func incompleteOrCorruptedDocumentCannotLookComplete() throws {
+        let content = "合成 PRD"; let sha = SHA256.hash(data: Data(content.utf8)).map { String(format:"%02x",$0) }.joined()
+        let data = try JSONSerialization.data(withJSONObject: ["artifact_id":"a","revision":1,"body_sha256":sha,"offset":0,"total_bytes":content.utf8.count,"text":content,"next_offset":NSNull(),"complete":true])
+        var document = DevelopmentDocument()
+        try document.append(JSONDecoder().decode(DevelopmentArtifactPage.self,from:data))
+        #expect(document.complete && document.text == content)
+        let corrupted = try JSONSerialization.data(withJSONObject: ["artifact_id":"a","revision":1,"body_sha256":String(repeating:"0",count:64),"offset":0,"total_bytes":content.utf8.count,"text":content,"next_offset":NSNull(),"complete":true])
+        var refused = DevelopmentDocument()
+        #expect(throws: (any Error).self) { try refused.append(JSONDecoder().decode(DevelopmentArtifactPage.self,from:corrupted)) }
+        #expect(!refused.complete && refused.text.isEmpty)
+    }
+    @Test func timelineDevelopmentEventRemainsVisible() throws {
+        let data = Data("{\"schema_version\":\"dal.timeline/1.0\",\"task_id\":\"task\",\"text\":\"等待审核\"}".utf8)
+        let content = try JSONDecoder().decode([String:JSONValue].self,from:data)
+        #expect(DevelopmentUpdate(content:content)?.text == "等待审核")
+    }
+}
+
+@Suite("Shared development wire vectors")
+struct SharedDevelopmentWireTests {
+    @Test func sharedDocumentAndReplyContextSurviveRecovery() throws {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { root.deleteLastPathComponent() }
+        let data = try Data(contentsOf: root.appendingPathComponent("tests/fixtures/dal_timeline.synthetic.json"))
+        let vector = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let decoder = JSONDecoder()
+        let page = try decoder.decode(DevelopmentArtifactPage.self, from: JSONSerialization.data(withJSONObject: vector["document"]!))
+        var document = DevelopmentDocument()
+        try document.append(page)
+        #expect(document.complete)
+        let reply = try decoder.decode(DevelopmentReplyContext.self, from: JSONSerialization.data(withJSONObject: vector["reply_context"]!))
+        let pending = ChatTimeline.PendingSend(idempotencyKey: "synthetic-key", conversationID: "synthetic-timeline", text: "通过",
+            clarificationOf: nil, dalReplyContext: reply)
+        #expect(try decoder.decode(ChatTimeline.PendingSend.self, from: JSONEncoder().encode(pending)) == pending)
+        let content = try decoder.decode([String: JSONValue].self, from: JSONSerialization.data(withJSONObject: vector["update"]!))
+        #expect(DevelopmentUpdate(content: content)?.artifactID == page.artifactID)
+    }
+}

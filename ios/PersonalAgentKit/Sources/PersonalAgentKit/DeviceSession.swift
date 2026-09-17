@@ -197,6 +197,29 @@ public actor DeviceSession {
         rejected = false
     }
 
+    public func developmentRoles() async throws -> DevelopmentRoles {
+        try await authorized { try await self.client.developmentRoles(token: $0) }
+    }
+    public func developmentTask(id: String) async throws -> DevelopmentTaskDetail {
+        try await authorized { try await self.client.developmentTask(id: id, token: $0) }
+    }
+
+    public func developmentTasks(filter: String = "ongoing", cursor: String? = nil) async throws -> DevelopmentTaskPage {
+        try await authorized { try await self.client.developmentTasks(filter: filter, cursor: cursor, token: $0) }
+    }
+
+    public func developmentDocument(id: String) async throws -> DevelopmentDocument {
+        var document = DevelopmentDocument()
+        var offset = 0
+        while !document.complete {
+            let currentOffset = offset
+            let page = try await authorized { try await self.client.developmentArtifact(id: id, offset: currentOffset, token: $0) }
+            try document.append(page)
+            if let next = page.nextOffset { offset = next }
+        }
+        return document
+    }
+
     // --- authenticated calls -------------------------------------------------
 
     public func capabilities() async throws -> Capabilities {
@@ -665,4 +688,16 @@ public enum DeviceSessionError: Error, Equatable {
     case malformedNonce
     case storedEnrollmentMalformed
     case localPersistenceFailed(deviceID: String, serverDeviceRevoked: Bool)
+}
+
+extension DeviceSession {
+    public func developmentReplyContext(eventID: String) async throws -> DevelopmentReplyContext {
+        try await authorized { try await self.client.developmentReplyContext(eventID: eventID, token: $0) }
+    }
+    public func sendChatMessage(conversationID: String, text: String, clarificationOf: String?,
+        startNewSession: Bool, dalReplyContext: DevelopmentReplyContext?, idempotencyKey: String) async throws -> OperationReceipt {
+        try await authorized { try await self.client.sendChatMessage(conversationID: conversationID, text: text,
+            clarificationOf: clarificationOf, startNewSession: startNewSession, dalReplyContext: dalReplyContext,
+            idempotencyKey: idempotencyKey, token: $0) }
+    }
 }
