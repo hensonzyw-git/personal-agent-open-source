@@ -55,7 +55,13 @@ def plan_contract(plan, reservation):
         body.pop(name, None)
     if body.get('route_reference') is None:
         body.pop('route_reference', None)
-    substitutions = sorted(((reservation[k], '${'+k+'}') for k in ('workspace','temp','git')), key=lambda x: -len(x[0]))
+    from personal_agent_dal.worker.role_adapter import codex_final_path
+    if body.get('final_report_path') is None:
+        body.pop('final_report_path',None)
+    elif body['final_report_path']!=codex_final_path(reservation):
+        raise SupervisorRefusal('FINAL_OUTPUT_PATH_INVALID')
+    substitutions = sorted([*((reservation[k], '${'+k+'}') for k in ('workspace','temp','git')),
+        (codex_final_path(reservation),'${codex_final_output}')],key=lambda x:-len(x[0]))
     def normalize(value):
         if isinstance(value, str):
             for path, token in substitutions: value = value.replace(path, token)
@@ -116,6 +122,9 @@ def validate_admission(binding, *, context, reservation, plan=None, expected_dig
             if any(not Path(p).is_absolute() or '${' in p for p in smoke['task_paths'].values()): raise ValueError()
             command=list(smoke['command'])
             for i,arg in enumerate(command):
+                if current.final_report_path:
+                    from personal_agent_dal.worker.role_adapter import codex_final_path
+                    arg=arg.replace(codex_final_path(smoke['task_paths']),'${codex_final_output}')
                 for key,path in sorted(smoke['task_paths'].items(),key=lambda x:-len(x[1])):
                     arg=arg.replace(path,'${'+key+'}')
                 command[i]=arg

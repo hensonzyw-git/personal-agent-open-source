@@ -4,6 +4,8 @@ This entrypoint requires new native CLI and deterministic-executor admission.
 It does not inherit a legacy report-only gate or accept a fixture as admission.
 """
 import json
+import os
+import hashlib
 from dataclasses import asdict,replace
 from datetime import datetime
 from pathlib import Path
@@ -19,7 +21,7 @@ from personal_agent_dal.timeline.driver import validate_result
 from personal_agent_dal.worker.supervisor import Supervisor,SupervisorRefusal
 from personal_agent_dal.worker.runtime_admission import private_json,validate_admission
 from personal_agent_dal.worker.runtime_process import os_boot_id,run_process,stop_registered
-from personal_agent_dal.worker.role_adapter import build_plan,parse_events,load_adapter_config
+from personal_agent_dal.worker.role_adapter import build_plan,parse_events,load_adapter_config,read_final_report
 from personal_agent_dal.worker.workflow_inventory import WorkflowInventory
 from personal_agent_dal.worker.workflow_executor import RepositoryExecutor
 from personal_agent_dal.worker.workflow_process import validate_executor
@@ -136,6 +138,8 @@ class WorkflowWorker:
         admission_sha=validate_admission(admission,context=context,reservation=reservation,plan=plan)
         plan=replace(plan,admission=admission,admission_sha256=admission_sha,production_enabled=True)
         validate_executor(self.config,self.supervisor)
+        if plan.final_report_path and os.path.lexists(plan.final_report_path):
+            raise SupervisorRefusal('CLI_FINAL_OUTPUT_ALREADY_EXISTS')
         def heartbeat():
             status=self.transport.workflow_call('status',{'step_id':binding['step_id']})
             return (status.get('stop_required') is False and status.get('attempt_id')==attempt
@@ -176,7 +180,10 @@ class WorkflowWorker:
                     deadline=int(datetime.fromisoformat(binding['lease_until']).timestamp()),prompt=prompt)
                 if process['reason'] or process['exit_code']!=0 or not process['stop']['process_exited']:
                     raise SupervisorRefusal('WORKFLOW_PROVIDER_FAILED')
-                parsed=parse_events(process['raw'],plan.runtime)
+                final=read_final_report(plan.final_report_path) if plan.final_report_path else None
+                parsed=parse_events(process['raw'],plan.runtime,final_report=final)
+                self.inventory.observe(attempt,{'provider_stream_sha256':hashlib.sha256(process['raw']).hexdigest(),
+                    'provider_progress_messages':parsed.get('progress_messages',[])})
                 if parsed['outcome']!='succeeded':raise SupervisorRefusal('WORKFLOW_PROVIDER_FAILED')
                 result=json.loads(parsed['report'])
                 if phase in ('coding','fix'):

@@ -11,7 +11,7 @@ import signal
 import subprocess
 import sys
 import time
-from personal_agent_dal.worker.role_adapter import LaunchPlan
+from personal_agent_dal.worker.role_adapter import LaunchPlan,CLIEventCounter
 from personal_agent_dal.worker.supervisor import SupervisorRefusal, require_machine_acceptance
 
 
@@ -150,6 +150,7 @@ def run_process(inventory, attempt, plan, *, heartbeat, deadline, prompt=b''):
         _abort_owned_child(process)
         raise
     output=bytearray();errors=bytearray();event_count=0;reason=None;forced=False;requested=False;truncated=False
+    counter=CLIEventCounter(plan.runtime,plan.max_steps)
     sel=selectors.DefaultSelector()
     try:
         for stream in (process.stdout,process.stderr):os.set_blocking(stream.fileno(),False);sel.register(stream,selectors.EVENT_READ)
@@ -186,7 +187,8 @@ def run_process(inventory, attempt, plan, *, heartbeat, deadline, prompt=b''):
                 (output if key.fileobj is process.stdout else errors).extend(chunk)
                 if key.fileobj is process.stdout:
                     event_count += chunk.count(b'\n')
-                    if event_count > plan.max_steps: reason='CLI_EVENT_STEP_LIMIT';break
+                    try:counter.feed(chunk)
+                    except SupervisorRefusal as exc:reason=str(exc);break
         # An unreaped direct child anchors ownership while ordinary children
         # are stopped. Once reaped, never signal a surviving unowned group.
         process.poll()
