@@ -1,4 +1,4 @@
-"""Real claim/reserve/SQLite fairness; only the Worker auth identity is synthetic."""
+"""Real claim/reserve/SQLite; synthetic Worker auth and signed admission keys."""
 from types import SimpleNamespace
 
 import pytest
@@ -60,3 +60,59 @@ def test_new_lower_id_is_found_on_next_wrap(world,monkeypatch):
         assert next_binding is not None and next_binding['step_id']==ids[1]
         assert claim(client) is None
         assert claim(client)['step_id']==lower
+
+
+@pytest.mark.parametrize('healthy_candidate',[False,True])
+def test_budget_refused_candidate_does_not_hide_later_candidate(world,monkeypatch,healthy_candidate):
+    from datetime import timedelta
+    from personal_agent_dal.storage.timeline_models import DevelopmentExecution as Execution
+    from personal_agent_dal.timeline.recovery import RecoveryService
+    r,driver,client,_=claims(world,2 if healthy_candidate else 1)
+    with r.sessions() as s:
+        running=s.scalar(select(Step).where(Step.status=='dispatch_started'))
+        wf,step_id,attempt_id=running.workflow_id,running.step_id,running.attempt_id
+        started=s.scalar(select(Execution).where(Execution.step_id==step_id)).started_at
+    later=started+timedelta(seconds=590);r.now=lambda:later
+    driver.accept(step_id,attempt_id=attempt_id,result=dict(kind='clarification',text='Synthetic clarification',
+        ready=False,questions=['Missing detail'],acceptance=[]))
+    with r.sessions() as s:
+        version=s.get(Workflow,wf).version
+        execution=s.scalar(select(Execution).where(Execution.step_id==step_id))
+        assert execution.charged_seconds==590
+    RecoveryService(r).apply(command_id='budget-more-detail',source_message_ref='budget-more-detail-source',
+        subject='device:synthetic',workflow_id=wf,expected_version=version,action='clarification',text='Synthetic detail')
+    with monkeypatch.context() as patch:
+        patch.setattr('personal_agent_dal.timeline.driver.new_id',lambda:'0')
+        assert driver.tick(wf)['step_id']=='0'
+    # A real, settled execution consumed the budget. No artificial duplicate
+    # in-flight step or injected reserve exception is needed for this boundary.
+    with client:binding=claim(client)
+    with r.sessions() as s:
+        blocked=s.get(Workflow,wf)
+        assert blocked.status=='blocked' and blocked.blocker_reason=='EXECUTION_BUDGET_EXHAUSTED'
+        assert s.get(Step,'0').status=='prepared'
+        assert s.scalar(select(Execution).where(Execution.step_id=='0')) is None
+        if healthy_candidate:
+            assert binding is not None
+            other=s.get(Step,binding['step_id'])
+            assert other.workflow_id!=wf and s.get(Workflow,other.workflow_id).status=='active'
+            execution=s.scalar(select(Execution).where(Execution.step_id==other.step_id))
+            assert execution.execution_id==binding['execution_id'] and execution.reserved_seconds==600
+        else:assert binding is None
+
+
+def test_normal_tick_and_resume_cannot_create_fresh_step_beside_inflight(world):
+    from personal_agent_dal.timeline.recovery import RecoveryService
+    r,driver,client,ids=claims(world,1)
+    with r.sessions() as s:
+        step=s.get(Step,ids[0]);wf=step.workflow_id;version=s.get(Workflow,wf).version
+    for _ in range(3):
+        assert driver.tick(wf)==dict(workflow_id=wf,status='dispatch_started',step_id=ids[0])
+    result=RecoveryService(r).process(command_id='resume-inflight',source_message_ref='resume-inflight-source',
+        subject='device:synthetic',workflow_id=wf,expected_version=version,action='resume',text='继续开发')
+    assert result['status']=='refused' and result['reason']=='RECONCILIATION_REQUIRED'
+    with client:binding=claim(client)
+    assert binding['step_id']==ids[0]
+    with r.sessions() as s:
+        assert list(s.scalars(select(Step.step_id).where(Step.workflow_id==wf)))==ids
+        assert s.get(Workflow,wf).status=='active'
