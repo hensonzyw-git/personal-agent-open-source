@@ -7,7 +7,7 @@ import json
 import os
 import hashlib
 from dataclasses import asdict,replace
-from datetime import datetime
+from datetime import datetime,timezone
 from pathlib import Path
 import time
 from cryptography.hazmat.primitives import serialization
@@ -175,7 +175,8 @@ class WorkflowWorker:
             else:
                 for directory in plan.task_directories.values():Path(directory).mkdir(mode=0o700,exist_ok=True)
                 from personal_agent_dal.worker.workflow_prompt import build_prompt
-                prompt=build_prompt(inputs)
+                prompt=build_prompt(inputs,source_directory=reservation['workspace'],
+                    scratch_directory=reservation['temp'],now=datetime.now(timezone.utc))
                 process=run_process(self.inventory,attempt,plan,heartbeat=heartbeat,
                     deadline=int(datetime.fromisoformat(binding['lease_until']).timestamp()),prompt=prompt)
                 if process['reason'] or process['exit_code']!=0 or not process['stop']['process_exited']:
