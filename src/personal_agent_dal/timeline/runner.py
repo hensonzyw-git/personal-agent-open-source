@@ -91,8 +91,11 @@ def mount_routes(app,endpoint,service,github_adapter=None):
                 DevelopmentDriverStep.status.in_(('prepared','dispatch_started','result_unknown')),
                 DevelopmentDriverStep.step_id>claim_cursors.get(identity[0],''))
                 .order_by(DevelopmentDriverStep.step_id).limit(100)))
-        claim_cursors[identity[0]]=ids[-1] if ids else ''
+        if not ids:claim_cursors[identity[0]]=''
         for step_id in ids:
+            # reserve may return on the first candidate. Advance only through
+            # attempted steps, so the rest of this page remain reachable.
+            claim_cursors[identity[0]]=step_id
             try:return driver.reserve(step_id,worker_id=identity[0])
             except ValueError as exc:
                 if str(exc)=='EXECUTION_BUDGET_EXHAUSTED':
