@@ -678,7 +678,14 @@ only after target-machine acceptance and stop the legacy poll job before switchi
 Keep the old release and both databases backed up for coordinated rollback; do not
 blindly downgrade databases containing new execution/delivery evidence.
 
-PA and DAL must be upgraded together (PA migration `0021_dal_decision_projection`,
+PA command retry migration `0022_dal_command_retry` persists retry deadlines and
+halt reasons. A halted attempted command remains `delivery_unknown`; do not clear
+its retry fields or issue a replacement command to infer reconciliation. Preserve
+PA/DAL matching command receipts before rollback; downgrade refuses persisted
+retry/unknown-result evidence. The coordinated iOS release displays halted command
+notices even when a task ID is not yet known.
+
+PA and DAL must be upgraded together (PA migration `0022_dal_command_retry`,
 DAL `0022`). DAL Timeline config needs the registered role catalog plus
 `execution_registry_file`, with protected per-worker public keys and matching v3
 admission records. The Worker workflow config is the closed

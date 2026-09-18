@@ -50,3 +50,17 @@ def test_receipt_and_transition_rollback_together_on_invalid_output(world):
     with r.sessions() as s:
         assert s.scalar(select(DevelopmentExecution)).receipt_digest is None
         assert s.get(DevelopmentDriverStep,launch['step_id']).status=='dispatch_started'
+
+
+def test_pregrant_clarification_attempts_share_one_workflow_budget(world):
+    from datetime import timedelta
+    from personal_agent_dal.timeline.recovery import RecoveryService
+    r,driver,wf,item=configured(world)
+    later=r.now()+timedelta(seconds=590);r.now=lambda:later
+    driver.accept(item['step_id'],attempt_id=item['attempt_id'],result=dict(kind='clarification',text='Synthetic clarification',ready=False,questions=['Missing detail'],acceptance=[]))
+    with r.sessions() as s:version=s.get(DevelopmentWorkflow,wf).version
+    RecoveryService(r).apply(command_id='clarify-again',source_message_ref='source-again',subject='device:synthetic',
+        workflow_id=wf,expected_version=version,action='clarification',text='Synthetic additional detail')
+    step=driver.tick(wf)
+    with pytest.raises(ValueError,match='EXECUTION_BUDGET_EXHAUSTED'):
+        driver.dispatch(step['step_id'],admission={'test':'signed-by-helper'})

@@ -221,7 +221,7 @@ class StageService:
     def _evidence(self,id,revision,version,receipt,states,target,field,candidate,_session=None):
         if not re.fullmatch('[a-f0-9]{64}',receipt):raise ValueError('RECEIPT_INVALID')
         def work(s):
-            row,_=self._row(s,id,revision,version,states);self._candidate(row,candidate)
+            row,plan=self._row(s,id,revision,version,states);self._candidate(row,candidate)
             result=self._stage_evidence(s,row,receipt,'verify' if field=='verification_digest' else 'code_review',candidate)
             if (result.get('passed') is not True) != (target=='fixing'):raise ValueError('RECEIPT_INVALID')
             setattr(row,field,receipt)
@@ -232,6 +232,9 @@ class StageService:
                 else:target_state=target
             else:target_state=target
             row.state=target_state;row.state_version+=1
+            if target_state=='blocked':
+                writer=s.get(Writer,plan.workflow_id)
+                if writer is not None:s.delete(writer)
         return work(_session) if _session is not None else self._write(work)
 
     def committed(self,id,revision,*,expected_version,receipt_digest,_session=None,**candidate):

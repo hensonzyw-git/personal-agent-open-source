@@ -32,11 +32,21 @@ def evidence(r,wf,phase,result,*,stage=None):
     snapshot=roles.snapshot(workflow_id=wf)
     driver=SignedDriver(r,roles=roles)
     ident=new_id()
+    from datetime import timedelta
+    from personal_agent_dal.timeline.operator import Authorization,register_authorization
+    from personal_agent_dal.storage.timeline_models import DevelopmentProjectAuthorization as Grant
+    with r.sessions() as s:grant=s.get(Grant,'stage-fixture-'+wf)
+    if grant is None:
+        register_authorization(r,Authorization(grant_id='stage-fixture-'+wf,request_id=wf,project_id='project',
+            subject='device:synthetic',approval_evidence_ref='synthetic-stage-approval',root='/synthetic/stages',
+            kind='existing',display_name='Synthetic stages',actions=['read','write'],budget_seconds=600,
+            expires_at=r.now()+timedelta(hours=1),registration_policy='local_tracker'),actor='test-operator')
     with r.sessions() as s,s.begin():
         workflow=s.get(Workflow,wf)
         gate=s.get(Gate,wf)
         if gate is None:gate=Gate(workflow_id=wf,mode='open',epoch=1,version=1);s.add(gate)
-        inputs={}
+        grant=s.get(Grant,'stage-fixture-'+wf)
+        inputs=dict(project={'grant_id':grant.grant_id},authorization=r._open(Grant,grant.grant_id,'sealed_grant',grant.sealed_grant))
         if stage:
             row=s.get(Stage,stage);plan=s.get(Plan,row.plan_id)
             inputs['stage']=dict(state_version=row.state_version,dependency_digest=row.dependency_digest,plan_digest=plan.dag_digest)

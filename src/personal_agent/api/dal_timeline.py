@@ -1,9 +1,10 @@
 """PA identity checks and encrypted, replayable Timeline command delivery."""
 import json
 import threading
+from datetime import timedelta
 from types import SimpleNamespace
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from personal_agent.storage.models import Device, DalTimelineCommand
 from personal_agent_core.ids import new_id
 from personal_agent_core.manifest import canonical_json
@@ -130,6 +131,25 @@ class TimelineBridge:
             except (OSError,httpx.RequestError):break
         return dict(items=items,total=total,complete=False,snapshot=snapshot)
 
+    def _halt_delivery(self,s,row,reason):
+        if row.delivery_error is not None:return
+        row.delivery_error=reason
+        row.next_attempt_at=None
+        # Preserve delivery_unknown: failure to authenticate a response is not
+        # evidence that the remote command failed or never took effect.
+        from personal_agent.api import events
+        from personal_agent.context.session_manager import SessionManager
+        from personal_agent.context.config import default_context_config
+        manager=self.projector.manager if self.projector else SessionManager(default_context_config())
+        now=self.now();timeline=events.canonical_timeline_id(s,now=now)
+        session_id=manager.system_event_session(s,conversation_id=timeline,now=now)
+        message=('开发命令已停止自动重试，远端结果仍未知。请先核对开发任务进度并对账，不要重复提交。'
+            if row.attempts else '开发命令未发送，已停止投递。请检查设备授权或联系管理员。')
+        events.append_event(s,self.keyring,conversation_id=timeline,session_id=session_id,
+            turn_id='dal-command:'+row.command_id,event_type='development_update',operation_id=None,now=now,
+            content=dict(schema_version='dal.timeline/1.0',kind='command.delivery_halted',
+                command_id=row.command_id,reason=reason,text=message))
+
     def deliver_pending(self,*,stop_event=None):
         # Only one dispatcher per composed process. Cross-process duplicates
         # retain the same command ID and DAL's atomic idempotency contract.
@@ -137,36 +157,53 @@ class TimelineBridge:
         try:
             with self.sessions() as s:
                 ids=list(s.scalars(select(DalTimelineCommand.command_id).where(
-                    DalTimelineCommand.status.in_(['queued','delivery_unknown'])).order_by(
+                    DalTimelineCommand.status.in_(['queued','delivery_unknown']),
+                    DalTimelineCommand.delivery_error.is_(None),
+                    or_(DalTimelineCommand.next_attempt_at.is_(None),
+                        DalTimelineCommand.next_attempt_at<=self.now(),DalTimelineCommand.attempts>=5)).order_by(
                     DalTimelineCommand.created_at,DalTimelineCommand.command_id).limit(50)))
             for id in ids:
                 if stop_event is not None and stop_event.is_set():return
                 def prepare(s):
                     row=s.scalar(select(DalTimelineCommand).where(DalTimelineCommand.command_id==id))
-                    if row.status not in ('queued','delivery_unknown'):return None
-                    body=self._open(id,'sealed_body',row.sealed_body)
+                    if row is None or row.status not in ('queued','delivery_unknown') or row.delivery_error is not None:return None
+                    try:body=self._open(id,'sealed_body',row.sealed_body)
+                    except ValueError:
+                        self._halt_delivery(s,row,'INPUT_INTEGRITY_FAILED');return None
                     scope=('dal.request' if body['payload']['kind']=='project_selection' else 'dal.'+body['payload']['kind']+'.decide') if body['command_kind']=='decision' else 'dal.request'
                     auth=SimpleNamespace(device_id=row.device_id,subject_id='device:'+row.device_id,
                         key_thumbprint=row.key_thumbprint,scopes=[scope])
                     try:self._identity(s,auth,scope)
                     except ValueError:
                         if row.attempts==0:row.status='cancelled'
-                        return None
-                    body=self._open(id,'sealed_body',row.sealed_body)
+                        self._halt_delivery(s,row,'IDENTITY_REVOKED');return None
+                    if row.attempts>=5:
+                        self._halt_delivery(s,row,'RETRY_EXHAUSTED');return None
+                    if row.next_attempt_at is not None and row.next_attempt_at>self.now():return None
                     if digest(dict(device_id=row.device_id,key_thumbprint=row.key_thumbprint,body=body))!=row.body_sha256:
-                        raise ValueError('INPUT_INTEGRITY_FAILED')
+                        self._halt_delivery(s,row,'INPUT_INTEGRITY_FAILED');return None
                     row.attempts+=1
+                    row.next_attempt_at=self.now()+timedelta(seconds=5*2**(row.attempts-1))
                     row.status='delivery_unknown'  # Durable before any transport.
                     return auth.subject_id,body
                 with self.sessions() as s:pending=run_write_transaction(s,lambda:prepare(s))
                 if pending is None:continue
                 try:result=self.transport.call(operation=pending[1]['command_kind'],request_id=id,subject=pending[0],body=pending[1])
-                except (ValueError,OSError,httpx.RequestError):continue
+                except (ValueError,OSError,httpx.RequestError) as exc:
+                    reason='RESPONSE_INVALID' if isinstance(exc,ValueError) else None
+                    def fail(s):
+                        row=s.scalar(select(DalTimelineCommand).where(DalTimelineCommand.command_id==id))
+                        if row.status=='delivery_unknown' and (reason or row.attempts>=5):
+                            self._halt_delivery(s,row,reason or 'RETRY_EXHAUSTED')
+                    with self.sessions() as s:run_write_transaction(s,lambda:fail(s))
+                    continue
                 def accept(s):
                     row=s.scalar(select(DalTimelineCommand).where(DalTimelineCommand.command_id==id))
                     if row.status=='delivery_unknown':
                         row.sealed_receipt=self._seal(id,'sealed_receipt',result)
                         row.status=result['status']
+                        row.next_attempt_at=None
+                        row.delivery_error=None
                         if result['status']=='refused' and self.projector is not None and pending[1]['command_kind']=='decision':
                             from personal_agent.api import events
                             from personal_agent.storage.models import DalContextBinding

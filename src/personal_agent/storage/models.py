@@ -1320,6 +1320,8 @@ class DalTimelineCommand(Base):
     sealed_receipt: Mapped[dict[str, Any] | None] = mapped_column(EncryptedEnvelope)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(UtcTimestamp)
+    delivery_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
     __table_args__ = (
         CheckConstraint("status IN ('queued','delivery_unknown','cancelled','accepted','refused')", name='timeline_command_status'),

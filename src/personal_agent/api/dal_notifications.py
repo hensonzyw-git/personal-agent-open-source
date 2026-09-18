@@ -46,12 +46,7 @@ def _valid(session,bridge,event_id):
                 return latest['status']=='blocked' and latest.get('source_version')==content.get('source_version')
         return False
     if state.status!='pending':return False
-    # Read the projection's current expiry without relying on any device having
-    # opened the message. ConversationEvent stores encrypted content.
-    from personal_agent.api.events import _entry
-    event=session.get(ConversationEvent,event_id)
-    if event is None:return False
-    content=_entry(bridge.keyring,event).content
+    # Read the already decrypted projection expiry, independently of reply contexts.
     from datetime import datetime
     decision=content.get('decision')
     return bool(decision and datetime.fromisoformat(decision['expires_at'])>bridge.now())

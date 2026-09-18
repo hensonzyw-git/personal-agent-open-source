@@ -5,6 +5,14 @@ import CryptoKit
 
 @Suite("Development Timeline contracts")
 struct DevelopmentWireTests {
+    @Test func haltedCommandDisplaysBeforeTaskIdentityIsKnown() throws {
+        let data = try JSONSerialization.data(withJSONObject: ["schema_version":"dal.timeline/1.0", "kind":"command.delivery_halted", "command_id":"synthetic-command", "text":"远端结果仍未知"])
+        var content = try JSONDecoder().decode([String:JSONValue].self, from:data)
+        let update = try #require(DevelopmentUpdate(content:content))
+        #expect(update.taskID == nil && update.text == "远端结果仍未知")
+        content.removeValue(forKey:"command_id")
+        #expect(DevelopmentUpdate(content:content) == nil)
+    }
     @Test func unknownStateStaysUnknown() {
         #expect(DevelopmentState.label(phase: "future", status: "active").contains("未知"))
         #expect(DevelopmentState.label(phase: "accepted", status: "completed") == "已验收")

@@ -48,7 +48,7 @@ def test_main_0013_rows_and_schema_survive_bridge_release(tmp_path):
         assert all(signature(inspect(engine), name) == schemas[name] for name in names)
         assert set(RUN_TABLES) <= names
         graph = ScriptDirectory.from_config(db.alembic_config(engine))
-        assert graph.get_heads() == ['0021_dal_decision_projection']
+        assert graph.get_heads() == ['0022_dal_command_retry']
         assert graph.get_revision('0015_dal_delivery_status').down_revision == '0014_dal_resume_decisions'
         assert graph.get_revision('0014_dal_resume_decisions').down_revision == '0013_adk_model_led'
         with engine.connect() as conn:

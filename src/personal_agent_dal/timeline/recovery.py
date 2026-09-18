@@ -85,6 +85,17 @@ class RecoveryService:
                     raise ValueError('PROPOSAL_REFRESH_REQUIRED')
                 wf.status='active';gate.mode='open';gate.version+=1;gate.epoch+=1
                 if wf.phase=='delivery_waiting':wf.phase='delivery_prepare';gate.mode='paused'
+                from personal_agent_dal.storage.timeline_models import DevelopmentStagePlan
+                from personal_agent_dal.timeline.stages import plan_stages
+                plan=s.scalar(select(DevelopmentStagePlan).where(DevelopmentStagePlan.workflow_id==workflow_id).order_by(DevelopmentStagePlan.revision.desc()))
+                if plan is not None and any(row.state=='blocked' for row in plan_stages(s,plan.plan_id)):
+                    # A fresh human request permits planning, never a budget reset
+                    # or direct resumption of the exhausted source writer.
+                    from personal_agent_dal.storage.timeline_models import DevelopmentStageWriter
+                    writer=s.get(DevelopmentStageWriter,workflow_id)
+                    if writer is not None:s.delete(writer)  # Also repairs pre-fix persisted rows.
+                    wf.phase='delivery_revision_planning';gate.mode='paused'
+                wf.blocker_reason=None
             elif action=='refresh':
                 if wf.phase not in ('prd_waiting','project_selection','delivery_waiting'):raise ValueError('PROPOSAL_REFRESH_REQUIRED')
                 kind={'prd_waiting':'prd','project_selection':'project_selection','delivery_waiting':'delivery'}[wf.phase]

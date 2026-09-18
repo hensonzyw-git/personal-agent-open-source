@@ -15,10 +15,14 @@ def context(requests,session,wf,targets=None):
     plan=session.scalar(select(Plan).where(Plan.workflow_id==wf.workflow_id).order_by(Plan.revision.desc()))
     if plan is None:raise ValueError('REVISION_BASE_REQUIRED')
     rows=plan_stages(session,plan.plan_id)
-    if not rows or any(row.state!='committed' for row in rows):raise ValueError('REVISION_BASE_REQUIRED')
+    interrupted=any(row.state=='blocked' for row in rows)
+    if not rows or (not interrupted and any(row.state!='committed' for row in rows)):
+        raise ValueError('REVISION_BASE_REQUIRED')
+    if interrupted and any(row.state not in ('committed','blocked','pending','ready') for row in rows):
+        raise ValueError('REVISION_BASE_REQUIRED')
     edges=list(session.scalars(select(Edge).where(Edge.plan_id==plan.plan_id)))
     versions={row.stage_id:row.revision for row in rows}
-    affected=set()
+    affected={row.stage_id for row in rows if row.state!='committed'}
     if targets is not None:
         for target in targets:
             if versions.get(target['stage_id'])!=target['revision']:raise ValueError('REVISION_TARGET_INVALID')
@@ -28,11 +32,21 @@ def context(requests,session,wf,targets=None):
             if enlarged==affected:break
             affected=enlarged
     delivery=session.scalar(select(Delivery).where(Delivery.workflow_id==wf.workflow_id).join(Artifact,Delivery.artifact_id==Artifact.artifact_id).order_by(Artifact.revision.desc()))
-    if delivery is None:raise ValueError('REVISION_BASE_REQUIRED')
-    manifest=requests._open(Delivery,delivery.delivery_id,'sealed_manifest',delivery.sealed_manifest)
-    return dict(plan_id=plan.plan_id,plan_digest=plan.dag_digest,baseline=manifest['head_sha'],
-        delivery_digest=delivery.manifest_digest,affected=sorted(affected),
+    if interrupted:
+        from personal_agent_dal.storage.timeline_models import DevelopmentWorkspace
+        workspace=session.get(DevelopmentWorkspace,wf.workflow_id)
+        last=session.scalar(select(Step).where(Step.workflow_id==wf.workflow_id,Step.phase=='stage_commit',Step.status=='completed').order_by(Step.expected_version.desc()))
+        if workspace is None:raise ValueError('REVISION_BASE_REQUIRED')
+        baseline=requests._open(Step,last.step_id,'sealed_result',last.sealed_result)['commit_sha'] if last else workspace.base_sha
+        delivery_digest=None
+    else:
+        if delivery is None:raise ValueError('REVISION_BASE_REQUIRED')
+        manifest=requests._open(Delivery,delivery.delivery_id,'sealed_manifest',delivery.sealed_manifest)
+        baseline=manifest['head_sha'];delivery_digest=delivery.manifest_digest
+    return dict(plan_id=plan.plan_id,plan_digest=plan.dag_digest,baseline=baseline,
+        delivery_digest=delivery_digest,affected=sorted(affected),
         stages=[dict(stage_id=row.stage_id,revision=row.revision,state_version=row.state_version,
+            state=row.state,review_fix_cycle=row.review_fix_cycle,
             goal=requests._open(Stage,row.stage_id+':'+str(row.revision),'sealed_goal',row.sealed_goal),
             head_sha=row.head_sha,tree_sha=row.tree_sha,commit_digest=row.commit_digest,
             verification_digest=row.verification_digest,review_digest=row.review_digest) for row in rows],

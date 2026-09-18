@@ -81,9 +81,20 @@ class ExecutionAuthority:
             step.step_id,'sealed_input',step.sealed_input)
         authorization=inputs.get('authorization')
         grant_id=inputs.get('project',{}).get('grant_id')
+        if grant_id:
+            if authorization is None:raise ValueError('PROJECT_AUTHORIZATION_REQUIRED')
+            executions=select(Execution).where(Execution.grant_id==grant_id)
+            limit=authorization['budget_seconds']
+        else:
+            if step.phase not in ('clarify','project_routing') or authorization is not None:
+                raise ValueError('PROJECT_AUTHORIZATION_REQUIRED')
+            from personal_agent_dal.storage.timeline_models import DevelopmentDriverStep
+            executions=select(Execution).join(DevelopmentDriverStep).where(
+                DevelopmentDriverStep.workflow_id==step.workflow_id,Execution.grant_id.is_(None))
+            limit=600
         spent=sum(row.charged_seconds if row.charged_seconds is not None else row.reserved_seconds
-            for row in s.scalars(select(Execution).where(Execution.grant_id==grant_id))) if grant_id else 0
-        remaining=authorization['budget_seconds']-spent if authorization else 600
+            for row in s.scalars(executions))
+        remaining=limit-spent
         if remaining<15:raise ValueError('EXECUTION_BUDGET_EXHAUSTED')
         budget=min(600,remaining)
         until=min(self.r.now()+timedelta(seconds=budget),

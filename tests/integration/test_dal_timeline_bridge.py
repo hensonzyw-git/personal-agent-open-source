@@ -59,6 +59,8 @@ def test_lost_reply_reopen_replays_same_command(bridge_world):
     assert dal.list_tasks(subject=auth.subject_id)['total']==1
     restarted=TimelineBridge(session_factory=bridge.sessions,keyring=bridge.keyring,transport=bridge.transport)
     state['lose']=False
+    from datetime import timedelta
+    restarted.now=lambda:bridge.now()+timedelta(seconds=6)
     restarted.deliver_pending()
     result=restarted.command(auth,'command')
     assert result['status']=='accepted'
@@ -470,3 +472,90 @@ def test_decision_tombstone_prevents_historical_context_recreation(bridge_world)
         delivered(s,bridge,auth,[SimpleNamespace(event_type='development_update',event_id=event_id,content={'decision':decision})])
     assert pending(bridge,auth)==[]
     with pytest.raises(ValueError,match='DAL_CONTEXT_UNAVAILABLE'):mint(bridge,auth,event_id)
+
+
+@pytest.mark.parametrize('failure',['invalid_response','network','revoked'])
+def test_command_delivery_halts_visibly_without_claiming_remote_failure(bridge_world,failure):
+    from datetime import timedelta
+    from personal_agent.api.dal_timeline_events import TimelineProjector
+    from personal_agent.context.session_manager import SessionManager
+    from personal_agent.context.config import default_context_config
+    from personal_agent.storage.models import ConversationEvent
+    from personal_agent.api.events import _entry
+    bridge,auth,state,dal,engine=bridge_world
+    bridge.projector=TimelineProjector(bridge,SessionManager(default_context_config()))
+    clock=[utc_now()];bridge.now=lambda:clock[0]
+    original=bridge.transport.call
+    def call(**kwargs):
+        if kwargs['operation']=='submit':
+            original(**kwargs)  # The DAL may already have accepted the command.
+            if failure=='invalid_response':raise ValueError('DAL_RESPONSE_INVALID')
+            raise OSError('synthetic response loss')
+        return original(**kwargs)
+    bridge.transport.call=call
+    queue(bridge,auth);bridge.deliver_pending()
+    if failure=='revoked':
+        with bridge.sessions() as s,s.begin():
+            s.get(Device,'phone').status='revoked';s.get(Device,'phone').revoked_at=clock[0]
+    if failure=='network':
+        with bridge.sessions() as s:assert s.get(DalTimelineCommand,'command').attempts==1
+        bridge.deliver_pending()
+        with bridge.sessions() as s:assert s.get(DalTimelineCommand,'command').attempts==1
+    for _ in range(10):
+        clock[0]+=timedelta(minutes=10);bridge.deliver_pending()
+    with bridge.sessions() as s:
+        row=s.get(DalTimelineCommand,'command')
+        assert row.status=='delivery_unknown' and row.sealed_receipt is None
+        assert row.delivery_error=={'invalid_response':'RESPONSE_INVALID','network':'RETRY_EXHAUSTED','revoked':'IDENTITY_REVOKED'}[failure]
+        assert row.attempts==(5 if failure=='network' else 1)
+        notices=[_entry(bridge.keyring,e).content for e in s.scalars(select(ConversationEvent))
+            if _entry(bridge.keyring,e).content.get('kind')=='command.delivery_halted']
+        assert len(notices)==1 and notices[0]['command_id']=='command'
+        assert '未知' in notices[0]['text']
+    assert dal.list_tasks(subject=auth.subject_id)['total']==1
+    restarted=TimelineBridge(session_factory=bridge.sessions,keyring=bridge.keyring,transport=bridge.transport,now=bridge.now)
+    calls=state['calls'];restarted.deliver_pending()
+    assert state['calls']==calls
+
+
+def test_invalid_http_response_stops_automatic_command_replay(bridge_world):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+    bridge,auth,_,_,_=bridge_world
+    calls=[]
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self,*args):pass
+        def do_POST(self):
+            calls.append(self.rfile.read(int(self.headers['Content-Length'])))
+            self.send_response(200);self.end_headers();self.wfile.write(b'{"unexpected":"synthetic"}')
+    server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
+    thread=Thread(target=server.serve_forever,daemon=True);thread.start()
+    try:
+        bridge.transport.base_url='http://127.0.0.1:'+str(server.server_port)
+        del bridge.transport._post  # Exercise the actual socket client and response verifier.
+        queue(bridge,auth);bridge.deliver_pending();bridge.deliver_pending()
+        assert len(calls)==1
+        with bridge.sessions() as s:
+            row=s.get(DalTimelineCommand,'command')
+            assert row.status=='delivery_unknown' and row.delivery_error=='RESPONSE_INVALID'
+    finally:
+        server.shutdown();server.server_close();thread.join(timeout=2)
+
+
+def test_retry_migration_preserves_old_unknown_and_blocks_unsafe_downgrade(bridge_world):
+    bridge,auth,state,_,engine=bridge_world
+    queue(bridge,auth)
+    db.downgrade(engine,'0021_dal_decision_projection')
+    with engine.begin() as c:
+        c.execute(text("UPDATE dal_timeline_commands SET status='delivery_unknown',attempts=9"))
+        before=c.execute(text('SELECT sealed_body,body_sha256 FROM dal_timeline_commands')).one()
+    db.upgrade(engine)
+    with engine.connect() as c:
+        assert c.execute(text('SELECT sealed_body,body_sha256 FROM dal_timeline_commands')).one()==before
+    bridge.deliver_pending()
+    assert state['calls']==0
+    with bridge.sessions() as s:
+        row=s.get(DalTimelineCommand,'command')
+        assert row.attempts==9 and row.status=='delivery_unknown' and row.delivery_error=='RETRY_EXHAUSTED'
+    with pytest.raises(RuntimeError,match='evidence must be preserved'):
+        db.downgrade(engine,'0021_dal_decision_projection')

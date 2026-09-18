@@ -45,14 +45,17 @@ public struct DevelopmentTaskPage: Decodable, Sendable {
 }
 
 public struct DevelopmentUpdate: Sendable, Equatable {
-    public let taskID: String
+    public let taskID: String?
     public let text: String
     public let phase: String?
     public let status: String?
     public let artifactID: String?
     public init?(content: [String: JSONValue]) {
-        guard content["schema_version"]?.stringValue == "dal.timeline/1.0", let task = content["task_id"]?.stringValue,
-              let text = content["text"]?.stringValue, !task.isEmpty else { return nil }
+        guard content["schema_version"]?.stringValue == "dal.timeline/1.0", let text = content["text"]?.stringValue else { return nil }
+        let task = content["task_id"]?.stringValue
+        let haltedCommand = content["kind"]?.stringValue == "command.delivery_halted"
+            && !(content["command_id"]?.stringValue ?? "").isEmpty
+        guard !(task ?? "").isEmpty || haltedCommand else { return nil }
         taskID = task; self.text = text; phase = content["phase"]?.stringValue; status = content["status"]?.stringValue
         artifactID = content["artifact"]?.objectValue?["artifact_id"]?.stringValue
     }

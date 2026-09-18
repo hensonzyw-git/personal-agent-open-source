@@ -39,7 +39,7 @@ def test_nonempty_budget_history_blocks_destructive_downgrade(tmp_path):
             db.downgrade(engine, "0012_calendar_media_merge")
         with engine.connect() as conn:
             assert conn.execute(text("SELECT reserved_count FROM search_budget_days")).scalar_one() == 1
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0021_dal_decision_projection"
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0022_dal_command_retry"
     finally:
         engine.dispose()
 

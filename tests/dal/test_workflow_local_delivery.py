@@ -37,7 +37,7 @@ def decision(r,wf,kind,command,text):
             decision_id=row.decision_id,binding_digest=row.binding_digest,text=text,expected_kind=kind)
 
 
-def delivery_ready(world,*,before_commit=False,existing=False,before_delivery=False):
+def delivery_ready(world,*,before_commit=False,existing=False,before_delivery=False,before_code=False):
     r,driver,wf,item=configured(world)
     accept(driver,item,dict(kind='clarification',text='Synthetic',ready=True,questions=[],acceptance=['a','b']))
     grant=Authorization(grant_id='local-grant',request_id=wf,project_id='local-project',subject='device:synthetic',
@@ -66,6 +66,7 @@ def delivery_ready(world,*,before_commit=False,existing=False,before_delivery=Fa
     commits=[]
     for n in (2,3):
         item=launch(driver,wf);assert item['input']['phase']=='coding'
+        if before_code and (before_code is True or before_code==n-1):return r,driver,wf,item
         base=item['input']['stage']['candidate']['head_sha']
         candidate=dict(base_sha=base,head_sha=base,tree_sha=str(n+3)*40)
         accept(driver,item,dict(kind='candidate',text='Synthetic code',candidate=candidate))
@@ -194,3 +195,44 @@ def test_unknown_source_write_cannot_be_resumed_from_stop_without_readback(world
     result=RecoveryService(r).process(command_id='cannot-replay',source_message_ref='cannot-replay-source',subject='device:synthetic',workflow_id=wf,
         expected_version=version,action='resume',text='继续开发')
     assert result['reason']=='RECONCILIATION_REQUIRED'
+
+
+@pytest.mark.parametrize('failed_phase',['verify','code_review'])
+@pytest.mark.parametrize('stage_ordinal',[1,2])
+def test_exhausted_stage_releases_writer_and_resume_requires_review(world,failed_phase,stage_ordinal):
+    from personal_agent_dal.storage.timeline_models import DevelopmentStage as Stage, DevelopmentStageWriter as Writer
+    from personal_agent_dal.timeline.recovery import RecoveryService
+    r,driver,wf,item=delivery_ready(world,before_code=stage_ordinal)
+    stage=item['input']['stage'];base=stage['candidate']['head_sha']
+    candidate=dict(base_sha=base,head_sha=base,tree_sha='5'*40)
+    for cycle in range(3):
+        accept(driver,item,dict(kind='candidate',text='Synthetic code',candidate=candidate))
+        item=launch(driver,wf)
+        accept(driver,item,dict(kind='verification',text='Synthetic verifier',candidate=candidate,passed=failed_phase!='verify',
+            commands=[dict(argv_digest='a'*64,output_digest='b'*64,exit_code=1 if failed_phase=='verify' else 0)]))
+        if failed_phase=='code_review':
+            item=launch(driver,wf)
+            accept(driver,item,dict(kind='code_review',text='Synthetic failed review',candidate=candidate,passed=False,findings=['Synthetic defect']))
+        if cycle<2:item=launch(driver,wf)
+    assert driver.tick(wf)['status']=='blocked'
+    with r.sessions() as s:
+        assert s.get(Writer,wf) is None
+        row=s.get(Stage,(stage['stage_id'],1))
+        assert row.state=='blocked' and row.review_fix_cycle==3
+        version=s.get(Workflow,wf).version
+    RecoveryService(r).process(command_id='resume-budget',source_message_ref='resume-source',subject='device:synthetic',
+        workflow_id=wf,expected_version=version,action='resume',text='继续开发')
+    item=launch(driver,wf)
+    assert item['input']['phase']=='delivery_revision_planning'
+    assert item['input']['revision_context']['baseline']==base
+    with r.sessions() as s:assert s.get(Gate,wf).mode=='paused'
+    accept(driver,item,dict(kind='revision_plan',text='Synthetic reviewed repair',stages=[dict(stage_id=stage['stage_id'],revision=1)],scope_changed=False))
+    item=launch(driver,wf)
+    assert item['input']['phase']=='delivery_revision_review'
+    proposal=next(a for a in item['input']['artifacts'] if a['kind']=='revision_plan')
+    accept(driver,item,dict(kind='review',text='Synthetic independent review',reviewed_artifact_id=proposal['artifact_id'],reviewed_digest=proposal['digest'],verdict='PASS',findings=[]))
+    item=launch(driver,wf)
+    assert item['input']['phase']=='coding' and item['input']['stage']['revision']==2
+    with r.sessions() as s:
+        assert s.get(Stage,(stage['stage_id'],1)).review_fix_cycle==3
+        assert s.get(Stage,(stage['stage_id'],1)).state=='invalidated'

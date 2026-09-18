@@ -41,6 +41,8 @@ def prepare_stage(driver,s,wf):
         manifest=driver.r._open(DevelopmentWorkspace,wf.workflow_id,'sealed_manifest',workspace.sealed_manifest)
         wf.phase='delivery_publication' if manifest['kind']=='existing' else 'delivery_prepare'
         wf.version+=1;return None
+    if any(row.state=='blocked' for row in rows):
+        driver._block(s,wf,'REVIEW_BUDGET_EXHAUSTED');return None
     writer=s.get(Writer,wf.workflow_id)
     if writer:
         row=s.get(Stage,(writer.stage_id,writer.stage_revision))
