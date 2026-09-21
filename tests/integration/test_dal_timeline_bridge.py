@@ -763,3 +763,23 @@ def test_development_history_excludes_future_other_session_and_revoked_device(br
     with bridge.sessions() as s,s.begin():
         device=s.get(Device,'phone');device.status='revoked';device.revoked_at=bridge.now()
     with pytest.raises(ValueError,match='DEVICE_INACTIVE'):development_history(owner)
+
+
+@pytest.mark.parametrize('tool',['dal_submit_request','dal_answer_clarification','dal_query_progress'])
+def test_blocker_explanation_does_not_admit_dal_actions(engine,token_ring,keyring,bridge_world,tool):
+    from test_runtime_v2_api import client_for, _auth
+    from test_adk_runtime import fc
+    from personal_agent.auth.tokens import issue_access_token
+    from personal_agent.storage.models import ConversationEvent
+    client,calls,deps=client_for(engine,token_ring,keyring,[lambda context,meta:[fc(tool,'misroute',arguments={},task=meta)]])
+    with deps.session_factory() as s,s.begin():
+        device=s.get(Device,'dev-1');scopes=json.loads(device.scopes)+['dal.request','dal.read'];device.scopes=json.dumps(scopes)
+    deps.dal_timeline=TimelineBridge(session_factory=deps.session_factory,keyring=keyring,transport=bridge_world[0].transport)
+    token=issue_access_token(token_ring,device_id='dev-1',device_key_thumbprint='THUMB',scopes=scopes,allowed_tools_version='v1',now=NOW)
+    response=client.post('/v1/chat/messages',headers={**_auth(token_ring),'Authorization':'Bearer '+token,'X-Client-Wire-Version':'6'},
+        json={'conversation_id':'c1','text':'source应该是apple health kit的数据，你检查了什么目标directory'})
+    assert response.status_code==200,response.text
+    assert calls and all(not t['function']['name'].startswith('dal_') for t in calls[0]['tools'])
+    with deps.session_factory() as s:
+        assert list(s.scalars(select(DalTimelineCommand)))==[]
+        assert list(s.scalars(select(ConversationEvent).where(ConversationEvent.event_type=='development_update')))==[]

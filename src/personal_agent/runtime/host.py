@@ -85,6 +85,8 @@ class DurableRunHost:
             self.specs.append(RunToolSpec('dal_answer_clarification','dal.answer_clarification','write',
                 '补充已有开发需求或收窄本期范围；不新建需求、不批准文档。Host 查询完整任务集并绑定唯一目标，多任务则向用户澄清。保存当前用户原文，模型不得传任务ID、版本或替换正文。',
                 obj({'arguments':obj({}),'task':TASK,'write_source_refs':REFS},['arguments','task'])))
+        from personal_agent.runtime.dal_history import restrict_development_tools
+        self.specs=restrict_development_tools(self.specs,self.payload.text)
         self.evidence=EvidenceCatalog(); self.results=[]; self.candidates={}; self.format_error=None; self.pending_metadata=None; self.read_failed=False
         self.model_factory=model_factory
         self._discover(0)

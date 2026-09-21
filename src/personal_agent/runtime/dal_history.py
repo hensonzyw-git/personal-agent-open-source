@@ -27,3 +27,18 @@ def development_history(owner):
             output.append(json.dumps({'development_message':value,'historical':True,
                 'event_id':row.event_id},ensure_ascii=False))
         return output
+
+
+def explanation_only(text):
+    """Narrow fail-closed guard for questions about a development blocker.
+
+    This is not a general intent classifier: ambiguous mixed correction/question
+    messages in this class remain conversational and cannot mutate DAL.
+    """
+    import re
+    return bool(re.search(r'卡点|卡住|开发|任务|目录|directory|source|检查',text,re.I)
+        and re.search(r'为什么|为何|什么意思|怎么回事|检查.{0,16}(?:什么|哪)|什么.{0,16}(?:目录|directory)|\bwhy\b|\bwhat\b',text,re.I))
+
+
+def restrict_development_tools(specs, text):
+    return [spec for spec in specs if not spec.business_name.startswith('dal.')] if explanation_only(text) else specs
