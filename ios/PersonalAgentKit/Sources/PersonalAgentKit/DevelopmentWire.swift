@@ -163,11 +163,29 @@ public struct DevelopmentStage: Decodable, Sendable, Identifiable {
     public let verificationDigest: String?
     public let reviewDigest: String?
     public let commitDigest: String?
+    public let commitSubject: String?
+    public let reviewSummary: DevelopmentReviewSummary?
     public var id: String { "\(stageID):\(revision)" }
     enum CodingKeys: String, CodingKey {
         case stageID = "stage_id", stateVersion = "state_version", revision,state
         case baseSHA = "base_sha", headSHA = "head_sha", treeSHA = "tree_sha"
+        case commitSubject = "commit_subject", reviewSummary = "review_summary"
         case verificationDigest = "verification_digest", reviewDigest = "review_digest", commitDigest = "commit_digest"
+    }
+}
+
+public struct DevelopmentReviewSummary: Decodable, Sendable {
+    public let unitID: String
+    public let initialReviews: Int
+    public let incrementalReviews: Int
+    public let legacyReviews: Int?
+    public let executionAttempts: Int
+    public let incompleteAttempts: Int
+    public let providerRequests: Int?
+    enum CodingKeys: String, CodingKey {
+        case legacyReviews = "legacy_reviews"
+        case unitID = "unit_id", initialReviews = "initial_reviews", incrementalReviews = "incremental_reviews"
+        case executionAttempts = "execution_attempts", incompleteAttempts = "incomplete_attempts", providerRequests = "provider_requests"
     }
 }
 

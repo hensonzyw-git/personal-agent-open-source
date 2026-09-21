@@ -55,3 +55,20 @@ struct SharedDevelopmentWireTests {
         #expect(DevelopmentUpdate(content: content)?.artifactID == page.artifactID)
     }
 }
+
+@Suite("Commit review accounting")
+struct CommitReviewAccountingTests {
+    @Test func oldStageKeepsUnknownReviewMetadata() throws {
+        let data = Data(#"{"stage_id":"synthetic","revision":1,"state":"reviewing","state_version":4}"#.utf8)
+        let stage = try JSONDecoder().decode(DevelopmentStage.self, from: data)
+        #expect(stage.commitSubject == nil && stage.reviewSummary == nil)
+    }
+    @Test func apiRequestsAreDistinctFromReviewCounts() throws {
+        let data = Data(#"{"stage_id":"synthetic","revision":1,"state":"fixing","state_version":4,"commit_subject":"One complete feature","review_summary":{"unit_id":"synthetic:1","initial_reviews":1,"incremental_reviews":2,"execution_attempts":4,"incomplete_attempts":1,"provider_requests":null}}"#.utf8)
+        let stage = try JSONDecoder().decode(DevelopmentStage.self, from: data)
+        #expect(stage.reviewSummary?.initialReviews == 1)
+        #expect(stage.reviewSummary?.incrementalReviews == 2)
+        #expect(stage.reviewSummary?.providerRequests == nil)
+        #expect(stage.commitSubject == "One complete feature")
+    }
+}

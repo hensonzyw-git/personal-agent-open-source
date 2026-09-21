@@ -26,7 +26,7 @@ def validate_executor(config,supervisor):
 def run_owned(argv,*,cwd,environment,timeout,inventory,attempt,heartbeat,revalidate,data=b''):
     revalidate()
     if not heartbeat():raise SupervisorRefusal('AUTHORITY_LOST')
-    inventory.observe(attempt,{'executor_launch_started':True})
+    inventory.observe(attempt,{'executor_launch_started':True,'active_process_owner':'executor','executor_process':{}})
     process=subprocess.Popen(argv,cwd=cwd,env=environment,stdin=subprocess.PIPE,stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,close_fds=True,start_new_session=True)
     try:

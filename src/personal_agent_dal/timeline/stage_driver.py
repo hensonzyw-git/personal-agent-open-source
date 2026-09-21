@@ -71,10 +71,20 @@ def prepare_stage(driver,s,wf):
         if base is None:raise ValueError('WORKSPACE_REQUIRED')
         row.base_sha=row.head_sha=base
     goal=driver.r._open(Stage,row.stage_id+':'+str(row.revision),'sealed_goal',row.sealed_goal)
+    from personal_agent_dal.timeline.commit_reviews import review_context
+    review=None
+    if wf.phase in ('code_review','fix'):
+        try:review=review_context(driver.r,s,wf.workflow_id,row,reject_unchanged=wf.phase=='code_review')
+        except ValueError as exc:
+            if str(exc)!='REVIEW_CANDIDATE_UNCHANGED':raise
+            row.state='blocked';row.state_version+=1
+            writer=s.get(Writer,wf.workflow_id)
+            if writer is not None:s.delete(writer)
+            driver._block(s,wf,'REVIEW_CANDIDATE_UNCHANGED');return None
     return dict(stage_id=row.stage_id,revision=row.revision,state_version=row.state_version,
         plan_digest=plan.dag_digest,dependency_digest=row.dependency_digest,goal=goal,
         candidate=dict(base_sha=row.base_sha,head_sha=row.head_sha,tree_sha=row.tree_sha),
-        review_fix_cycle=row.review_fix_cycle)
+        review_fix_cycle=row.review_fix_cycle,review=review)
 
 
 def accept_stage(driver,s,wf,step,result,execution):

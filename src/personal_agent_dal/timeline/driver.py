@@ -60,6 +60,11 @@ def validate_result(phase, result):
         raise ValueError('RESULT_INVALID')
     expected = PHASES.get(phase, (None, None))[1]
     fields = {'kind', 'text'}
+    if expected=='code_review' and 'runtime_usage' in result:
+        fields.add('runtime_usage')
+        usage=result['runtime_usage']
+        if (not isinstance(usage,dict) or set(usage)!={'input_tokens','output_tokens','provider_requests'}
+            or any(v is not None and (type(v) is not int or not 0<=v<=9007199254740991) for v in usage.values())):raise ValueError('RESULT_INVALID')
     extras = {
         'clarification': {'ready', 'questions', 'acceptance'},
         'project_route': {'candidates'},
@@ -251,6 +256,7 @@ class WorkflowDriver:
             inputs=dict(schema_version='dal.workflow-input/1.0',owner={'kind':'workflow','workflow_id':workflow_id},
                 phase=wf.phase,role=role,prepared_at=int(self.r.now().timestamp()),request_revision=revision.revision,request=request,
                 workflow_version=wf.version,gate_epoch=gate.epoch,snapshot_digest=snapshot['snapshot_digest'],artifacts=[])
+            if wf.phase=='design_authoring':inputs['planning_contract']='dal.commit-plan/1.0'
             for artifact in s.scalars(select(Artifact).where(Artifact.workflow_id==workflow_id).order_by(Artifact.kind,Artifact.revision)):
                 body=self.r._open(Artifact,artifact.artifact_id,'sealed_body',artifact.sealed_body)
                 if (not isinstance(body,dict) or not isinstance(body.get('text'),str)
@@ -427,6 +433,7 @@ class WorkflowDriver:
             if step.phase=='researching' and result_body['workspace_receipt_digest']!=inputs.get('workspace_receipt_digest'):
                 raise ValueError('WORKSPACE_BINDING_MISMATCH')
             if step.phase=='design_authoring':
+                if inputs.get('planning_contract')=='dal.commit-plan/1.0' and result_body['plan'].get('schema')!='dal.commit-plan/1.0':raise ValueError('COMMIT_PLAN_REQUIRED')
                 prds=[a for a in inputs['artifacts'] if a['kind']=='prd']
                 if not prds or result_body['prd_digest']!=prds[-1]['digest']:raise ValueError('PRD_BINDING_INVALID')
             if (step.phase in ('delivery_publication','delivery_prepare','delivery_probe') and inputs.get('workspace',{}).get('kind')=='existing'

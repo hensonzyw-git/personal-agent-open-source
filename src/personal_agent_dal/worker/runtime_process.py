@@ -46,6 +46,15 @@ def os_boot_id():
     return current_boot_id()
 
 
+def active_process_observation(observation):
+    """Select the current owner, never a stale packet-preparation Git PID."""
+    owner=observation.get('active_process_owner')
+    if owner=='model':return observation
+    if owner not in (None,'executor'):return {}
+    value=observation.get('executor_process',observation if owner is None else {})
+    return value if isinstance(value,dict) else {}
+
+
 def stop_registered(observation, *, boot_id):
     """Never infer ownership from a PID alone. Caller holds the lifetime lock."""
     stop = dict(requested=False, forced=False, process_exited=False)
@@ -122,7 +131,7 @@ def _abort_owned_child(process):
                 stream.close()
 
 
-def run_process(inventory, attempt, plan, *, heartbeat, deadline, prompt=b''):
+def run_process(inventory, attempt, plan, *, heartbeat, deadline, prompt=b'', prepare_prompt=None):
     # Synthetic classification is not a caller-controlled executable capability.
     if plan.runtime=='synthetic_fixture':
         row=inventory.get(attempt);reservation=inventory.supervisor.validate(row['reservation_id'])
@@ -133,7 +142,13 @@ def run_process(inventory, attempt, plan, *, heartbeat, deadline, prompt=b''):
         revalidate_plan(plan,inventory,attempt)
     if not heartbeat():raise SupervisorRefusal('AUTHORITY_LOST_BEFORE_START')
     inventory.transition(attempt,'granted','starting',observation={'plan':asdict(plan),'boot_id':inventory.supervisor.boot_id,
-        'owner_pid':os.getpid(),'owner_start':process_identity(os.getpid())})
+        'owner_pid':os.getpid(),'owner_start':process_identity(os.getpid()),
+        'active_process_owner':'model','pid':None,'pgid':None,'process_start':None})
+    if prepare_prompt is not None:
+        prompt=prepare_prompt()
+        if not isinstance(prompt,bytes) or len(prompt)>2*1024*1024:raise SupervisorRefusal('REVIEW_PROMPT_INVALID')
+        inventory.observe(attempt,{'active_process_owner':'model','pid':None,'pgid':None,'process_start':None})
+        if not heartbeat():raise SupervisorRefusal('AUTHORITY_LOST_BEFORE_START')
     # Crash from here through PID registration is unknown, never a retry.
     if plan.runtime!='synthetic_fixture':revalidate_plan(plan,inventory,attempt)
     process=subprocess.Popen(plan.argv,cwd=plan.cwd,env=plan.environment,stdin=subprocess.PIPE,
@@ -150,7 +165,7 @@ def run_process(inventory, attempt, plan, *, heartbeat, deadline, prompt=b''):
         _abort_owned_child(process)
         raise
     output=bytearray();errors=bytearray();event_count=0;reason=None;forced=False;requested=False;truncated=False
-    counter=CLIEventCounter(plan.runtime,plan.max_steps)
+    counter=CLIEventCounter(plan.runtime,min(plan.max_steps,24) if prepare_prompt is not None else plan.max_steps)
     sel=selectors.DefaultSelector()
     try:
         for stream in (process.stdout,process.stderr):os.set_blocking(stream.fileno(),False);sel.register(stream,selectors.EVENT_READ)

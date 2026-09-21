@@ -13,14 +13,24 @@ from personal_agent_dal.storage.timeline_models import DevelopmentStagePlan as P
 
 
 def validate_plan(body):
-    if not isinstance(body,dict) or set(body)!={'nodes','edges','acceptance'}:raise ValueError('PLAN_INVALID')
+    if not isinstance(body,dict):raise ValueError('PLAN_INVALID')
+    modern='schema' in body
+    if set(body)!=({'nodes','edges','acceptance','schema'} if modern else {'nodes','edges','acceptance'}) or (modern and body['schema']!='dal.commit-plan/1.0'):raise ValueError('PLAN_INVALID')
     nodes=body['nodes'];edges=body['edges'];keys=[];assigned=[]
     if (not isinstance(edges,list) or len(edges)>4096 or not isinstance(body['acceptance'],list)
         or not body['acceptance'] or any(not isinstance(a,str) or not a.strip() for a in body['acceptance'])):
         raise ValueError('PLAN_INVALID')
     if not isinstance(nodes,list) or not 1<=len(nodes)<=64:raise ValueError('PLAN_INVALID')
     for n in nodes:
-        if not isinstance(n,dict) or set(n)!={'stage_id','revision','goal','acceptance'}:raise ValueError('PLAN_INVALID')
+        if not isinstance(n,dict) or set(n)!=({'stage_id','revision','goal','acceptance','commit'} if modern else {'stage_id','revision','goal','acceptance'}):raise ValueError('PLAN_INVALID')
+        if modern:
+            commit=n['commit']
+            if not isinstance(commit,dict) or set(commit)!={'subject','in_scope','out_of_scope','modules','verification','boundary_reason'}:raise ValueError('PLAN_INVALID')
+            for key in ('subject','boundary_reason'):
+                if not isinstance(commit[key],str) or not commit[key].strip() or len(commit[key].encode())>4096:raise ValueError('PLAN_INVALID')
+            if len(commit['subject'].encode())>256 or any(ord(c)<32 for c in commit['subject']) or commit['subject']!=commit['subject'].strip():raise ValueError('PLAN_INVALID')
+            for key in ('in_scope','out_of_scope','modules','verification'):
+                if not isinstance(commit[key],list) or not 1<=len(commit[key])<=64 or any(not isinstance(v,str) or not v.strip() or len(v.encode())>4096 for v in commit[key]):raise ValueError('PLAN_INVALID')
         valid_id(n['stage_id'])
         if type(n['revision']) is not int or n['revision']<1 or not isinstance(n['goal'],str) or not n['goal'].strip() or len(n['goal'].encode())>32768:raise ValueError('PLAN_INVALID')
         if not isinstance(n['acceptance'],list) or not n['acceptance'] or any(not isinstance(a,str) or not a.strip() for a in n['acceptance']):raise ValueError('PLAN_INVALID')

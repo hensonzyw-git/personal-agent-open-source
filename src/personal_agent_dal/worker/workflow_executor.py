@@ -146,6 +146,28 @@ class RepositoryExecutor:
             raise SupervisorRefusal('CANDIDATE_CHANGED')
         return candidate
 
+    def review_packet(self):
+        """Complete frozen diff before any reviewer call; never truncate input."""
+        self.grant({'read'})
+        current=self.observe_candidate()
+        review=self.inputs['stage']['review']
+        previous=review['previous']
+        if review['mode'] not in ('initial','incremental') or (review['mode']=='incremental')!=(previous is not None):
+            raise SupervisorRefusal('REVIEW_BINDING_INVALID')
+        base=previous['candidate']['tree_sha'] if review['mode']=='incremental' else current['base_sha']
+        import re
+        if not isinstance(base,str) or re.fullmatch('[a-f0-9]{40}',base) is None:raise SupervisorRefusal('REVIEW_BINDING_INVALID')
+        base_tree=self.run(['rev-parse','--verify',base+'^{tree}'])
+        sizes=self.run(['diff','--no-ext-diff','--no-textconv','--no-renames','--numstat',base_tree,current['tree_sha'],'--'],raw=True)
+        if any(line.startswith(b'-\t-\t') for line in sizes.splitlines()):raise SupervisorRefusal('REVIEW_PACKET_UNSUPPORTED')
+        patch=self.run(['diff','--no-ext-diff','--no-textconv','--no-renames','--unified=12',base_tree,current['tree_sha'],'--'],raw=True)
+        if len(patch)>262144:raise SupervisorRefusal('REVIEW_PACKET_TOO_LARGE')
+        if not patch:raise SupervisorRefusal('REVIEW_PACKET_UNSUPPORTED')
+        self.observe_candidate()
+        return dict(schema='dal.commit-review-packet/1.0',unit_id=review['unit_id'],mode=review['mode'],
+            candidate=current,base_tree=base_tree,scope=self.inputs['stage']['goal'],previous=previous,
+            patch=patch.decode('utf-8','strict'),patch_sha256=hashlib.sha256(patch).hexdigest())
+
     def verify(self,*,heartbeat):
         self.grant({'read'})
         candidate=self.observe_candidate()
@@ -176,7 +198,10 @@ class RepositoryExecutor:
         self.grant({'read','write'})
         self.scan_candidate()
         candidate=self.observe_candidate()
-        message=('DAL stage '+self.inputs['stage']['stage_id']+'/'+str(self.inputs['stage']['revision'])+'\n').encode()
+        subject=self.inputs['stage'].get('goal',{}).get('commit',{}).get('subject')
+        if subject is None:subject='DAL stage '+self.inputs['stage']['stage_id']+'/'+str(self.inputs['stage']['revision'])
+        if not isinstance(subject,str) or not subject.strip() or len(subject.encode())>256 or any(ord(c)<32 for c in subject):raise SupervisorRefusal('COMMIT_PLAN_INVALID')
+        message=(subject+'\n').encode()
         sha=self.run(['commit-tree',candidate['tree_sha'],'-p',candidate['head_sha']],data=message)
         self.run(['update-ref',self.inputs['workspace']['branch'],sha,candidate['head_sha']])
         if self.run(['rev-parse','HEAD'])!=sha or self.run(['rev-parse','HEAD^{tree}'])!=candidate['tree_sha']:

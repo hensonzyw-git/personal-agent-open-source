@@ -175,11 +175,17 @@ struct DevelopmentTaskView: View {
                     if let actionMessage { Text(actionMessage).font(.footnote) }
                     if let actionError { Text(actionError).foregroundStyle(.red).font(.footnote) }
                 }.disabled(working || model.chat?.busy != false)
-                Section("阶段") {
+                Section("交付 Commit") {
                     ForEach(detail.stages) { stage in
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("阶段 \(stage.stageID) · v\(stage.revision)")
+                            Text(stage.commitSubject ?? "交付单元 · v\(stage.revision)")
                             Text(stage.state).font(.caption)
+                            if let review = stage.reviewSummary {
+                                Text("完整初审：\(review.initialReviews) · 增量复核：\(review.incrementalReviews)").font(.caption)
+                                if let legacy = review.legacyReviews, legacy > 0 { Text("历史审查（未分类）：\(legacy)").font(.caption) }
+                                Text("执行尝试：\(review.executionAttempts) · 未完成：\(review.incompleteAttempts)").font(.caption)
+                                Text("模型 API 请求：" + (review.providerRequests.map(String.init) ?? "待对账")).font(.caption)
+                            }
                             if let head = stage.headSHA { Text("代码版本：" + head).font(.caption).textSelection(.enabled) }
                             Text("验证：\(stage.verificationDigest == nil ? "尚无证据" : "已记录") · 审查：\(stage.reviewDigest == nil ? "尚无证据" : "已记录") · 提交：\(stage.commitDigest == nil ? "尚无证据" : "已记录")").font(.caption)
                         }

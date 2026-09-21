@@ -167,7 +167,14 @@ class RequestService:
         from personal_agent_dal.storage.timeline_models import DevelopmentArtifact, DevelopmentDecisionRequest, DevelopmentStage, DevelopmentStagePlan
         artifacts=[dict(artifact_id=a.artifact_id,kind=a.kind,revision=a.revision,body_sha256=a.body_sha256) for a in s.scalars(select(DevelopmentArtifact).where(DevelopmentArtifact.workflow_id==workflow.workflow_id).order_by(DevelopmentArtifact.kind,DevelopmentArtifact.revision))]
         decisions=[dict(decision_id=d.decision_id,kind=d.kind,version=d.version,expires_at=d.expires_at.isoformat(),artifact_id=self._open(DevelopmentDecisionRequest,d.decision_id,'sealed_binding',d.sealed_binding)['artifact_id']) for d in s.scalars(select(DevelopmentDecisionRequest).where(DevelopmentDecisionRequest.workflow_id==workflow.workflow_id,DevelopmentDecisionRequest.status=='pending',DevelopmentDecisionRequest.expires_at>self.now()))]
-        stages=[dict(stage_id=stage.stage_id,revision=stage.revision,state=stage.state,state_version=stage.state_version,base_sha=stage.base_sha,head_sha=stage.head_sha,tree_sha=stage.tree_sha,verification_digest=stage.verification_digest,review_digest=stage.review_digest,commit_digest=stage.commit_digest) for stage in s.scalars(select(DevelopmentStage).join(DevelopmentStagePlan).where(DevelopmentStagePlan.workflow_id==workflow.workflow_id).order_by(DevelopmentStagePlan.revision,DevelopmentStage.ordinal))]
+        from personal_agent_dal.timeline.commit_reviews import review_summary
+        stages=[]
+        for stage in s.scalars(select(DevelopmentStage).join(DevelopmentStagePlan).where(DevelopmentStagePlan.workflow_id==workflow.workflow_id).order_by(DevelopmentStagePlan.revision,DevelopmentStage.ordinal)):
+            goal=self._open(DevelopmentStage,stage.stage_id+':'+str(stage.revision),'sealed_goal',stage.sealed_goal)
+            stages.append(dict(stage_id=stage.stage_id,revision=stage.revision,state=stage.state,state_version=stage.state_version,
+                base_sha=stage.base_sha,head_sha=stage.head_sha,tree_sha=stage.tree_sha,verification_digest=stage.verification_digest,
+                review_digest=stage.review_digest,commit_digest=stage.commit_digest,commit_subject=goal.get('commit',{}).get('subject'),
+                review_summary=review_summary(self,s,workflow.workflow_id,stage)))
         return dict(request_id=request.request_id, request_version=request.version,
             version=workflow.version, status=workflow.status, text=body['text'],
             created_at=request.created_at.isoformat(), feature_id=workflow.feature_id,

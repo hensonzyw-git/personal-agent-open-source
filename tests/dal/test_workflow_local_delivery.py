@@ -15,7 +15,14 @@ from personal_agent_dal.storage.timeline_models import (
 from personal_agent_dal.storage.models import Feature
 from tests.dal.test_timeline_requests import world
 from tests.dal.test_timeline_driver import configured
-from tests.dal.test_timeline_stages import plan
+from tests.dal.test_timeline_stages import plan as legacy_plan
+
+def plan():
+    body=legacy_plan();body['schema']='dal.commit-plan/1.0'
+    for node in body['nodes']:
+        node['commit']=dict(subject=node['goal'],in_scope=[node['goal']],out_of_scope=['Other deliverable'],
+            modules=['synthetic'],verification=['synthetic acceptance'],boundary_reason='Independent synthetic acceptance and rollback unit')
+    return body
 
 
 def launch(driver,wf):
@@ -206,6 +213,7 @@ def test_exhausted_stage_releases_writer_and_resume_requires_review(world,failed
     stage=item['input']['stage'];base=stage['candidate']['head_sha']
     candidate=dict(base_sha=base,head_sha=base,tree_sha='5'*40)
     for cycle in range(3):
+        candidate=dict(candidate,tree_sha=str(cycle+5)*40)
         accept(driver,item,dict(kind='candidate',text='Synthetic code',candidate=candidate))
         item=launch(driver,wf)
         accept(driver,item,dict(kind='verification',text='Synthetic verifier',candidate=candidate,passed=failed_phase!='verify',

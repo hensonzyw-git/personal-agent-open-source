@@ -20,11 +20,21 @@ from personal_agent_dal.timeline.requests import digest
 from personal_agent_dal.timeline.driver import validate_result
 from personal_agent_dal.worker.supervisor import Supervisor,SupervisorRefusal
 from personal_agent_dal.worker.runtime_admission import private_json,validate_admission
-from personal_agent_dal.worker.runtime_process import os_boot_id,run_process,stop_registered
+from personal_agent_dal.worker.runtime_process import os_boot_id,run_process,stop_registered,active_process_observation
 from personal_agent_dal.worker.role_adapter import build_plan,parse_events,load_adapter_config,read_final_report
 from personal_agent_dal.worker.workflow_inventory import WorkflowInventory
 from personal_agent_dal.worker.workflow_executor import RepositoryExecutor
 from personal_agent_dal.worker.workflow_process import validate_executor
+
+
+def observed_review_result(parsed):
+    """Usage belongs to the CLI observer, never to the model's report JSON."""
+    result=json.loads(parsed['report'])
+    validate_result('code_review',result)
+    if 'runtime_usage' in result:raise SupervisorRefusal('REVIEW_USAGE_FORGED')
+    result=dict(result,runtime_usage=parsed['usage'])
+    validate_result('code_review',result)
+    return result
 
 
 def load_config(path):
@@ -91,7 +101,7 @@ class WorkflowWorker:
             with self.inventory.owner(row['effective_attempt']):
                 if row['state']=='result_ready':return self._send_result(row)
                 if row['state'] in ('starting','running','unknown','dispatch_requested','granted'):
-                    observation=row['observation'].get('executor_process',row['observation'])
+                    observation=active_process_observation(row['observation'])
                     stopped=stop_registered(observation,boot_id=self.supervisor.boot_id)
                     no_process_phase=row['binding']['execution_input']['phase']=='project_registration' and not row['observation'].get('executor_launch_started')
                     if row['state'] in ('dispatch_requested','granted') or no_process_phase:
@@ -184,10 +194,21 @@ class WorkflowWorker:
             else:
                 for directory in plan.task_directories.values():Path(directory).mkdir(mode=0o700,exist_ok=True)
                 from personal_agent_dal.worker.workflow_prompt import build_prompt
-                prompt=build_prompt(inputs,source_directory=reservation['workspace'],
-                    scratch_directory=reservation['temp'],now=datetime.now(timezone.utc))
+                reviewer_executor=None
+                process_input={}
+                if phase=='code_review' and inputs['stage'].get('review') is not None:
+                    reviewer_executor=RepositoryExecutor(self.supervisor,reservation,self.config,inputs,inventory=self.inventory,attempt=attempt,heartbeat=heartbeat)
+                    def prepare_review_prompt():
+                        packet=reviewer_executor.review_packet()
+                        self.inventory.observe(attempt,{'review_packet_sha256':digest(packet)})
+                        return build_prompt(dict(inputs,review_packet=packet),source_directory=reservation['workspace'],
+                            scratch_directory=reservation['temp'],now=datetime.now(timezone.utc))
+                    process_input['prepare_prompt']=prepare_review_prompt
+                else:
+                    process_input['prompt']=build_prompt(inputs,source_directory=reservation['workspace'],
+                        scratch_directory=reservation['temp'],now=datetime.now(timezone.utc))
                 process=run_process(self.inventory,attempt,plan,heartbeat=heartbeat,
-                    deadline=int(datetime.fromisoformat(binding['lease_until']).timestamp()),prompt=prompt)
+                    deadline=int(datetime.fromisoformat(binding['lease_until']).timestamp()),**process_input)
                 if process['reason'] or process['exit_code']!=0 or not process['stop']['process_exited']:
                     raise SupervisorRefusal('WORKFLOW_PROVIDER_FAILED')
                 final=read_final_report(plan.final_report_path) if plan.final_report_path else None
@@ -196,6 +217,9 @@ class WorkflowWorker:
                     'provider_progress_messages':parsed.get('progress_messages',[])})
                 if parsed['outcome']!='succeeded':raise SupervisorRefusal('WORKFLOW_PROVIDER_FAILED')
                 result=json.loads(parsed['report'])
+                if phase=='code_review':
+                    result=observed_review_result(parsed)
+                    if reviewer_executor is not None:reviewer_executor.observe_candidate()
                 if phase in ('coding','fix'):
                     if not isinstance(result,dict) or set(result)!={'kind','text'} or result['kind']!='code_report' or not isinstance(result['text'],str):
                         raise SupervisorRefusal('CODER_REPORT_INVALID')
