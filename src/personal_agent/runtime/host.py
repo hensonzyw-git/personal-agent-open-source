@@ -78,6 +78,13 @@ class DurableRunHost:
             self.specs.append(RunToolSpec('dal_query_progress','dal.query_progress','read',
                 '查询所有正在进行的开发任务。服务端完整分页，直接在 Timeline 展示每项真实阶段和状态，不由模型筛选。',
                 obj({'arguments':obj({}),'task':TASK})))
+        if (deps.dal_timeline is not None and auth.client_wire_version >= 6
+            and {'dal.read','dal.request'}.issubset(scopes) and {'dal.read','dal.request'}.issubset(auth.scopes)):
+            from personal_agent.runtime.run_catalog import obj, TASK, REFS
+            from personal_agent.runtime.run_tools import RunToolSpec
+            self.specs.append(RunToolSpec('dal_answer_clarification','dal.answer_clarification','write',
+                '补充已有开发需求或收窄本期范围；不新建需求、不批准文档。Host 查询完整任务集并绑定唯一目标，多任务则向用户澄清。保存当前用户原文，模型不得传任务ID、版本或替换正文。',
+                obj({'arguments':obj({}),'task':TASK,'write_source_refs':REFS},['arguments','task'])))
         self.evidence=EvidenceCatalog(); self.results=[]; self.candidates={}; self.format_error=None; self.pending_metadata=None; self.read_failed=False
         self.model_factory=model_factory
         self._discover(0)
@@ -336,6 +343,9 @@ class DurableRunHost:
                 if self.event_writer:self.event_writer(session,outcome)
             self.repo.finish(self.lease,answer,now_ms=self.now(),event_writer=writer,metadata=self.pending_metadata,close_source=result['complete'])
             return ToolResult(answer,stop=True)
+        if name == 'dal.answer_clarification':
+            from personal_agent.runtime.dal_recovery import answer_clarification
+            return await answer_clarification(self,args)
         if name == 'dal.submit_request':
             if self.deps.dal_timeline is None:raise RunStateError('dal_unavailable')
             # Only the present user message may create this request. Neither

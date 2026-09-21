@@ -67,7 +67,7 @@ class RecoveryService:
                 gate.mode='paused' if wf.status=='paused' else 'cancelled'
                 gate.version+=1;gate.epoch+=1
             elif action=='clarification':
-                if wf.status!='blocked' or wf.phase!='clarify':raise ValueError('STALE_BINDING')
+                if wf.status not in ('active','blocked') or wf.phase!='clarify':raise ValueError('STALE_BINDING')
                 previous=s.scalar(select(Revision).where(Revision.request_id==request.request_id,
                     Revision.revision==request.version))
                 body=self.r._open(Revision,previous.revision_id,'sealed_body',previous.sealed_body)
@@ -78,7 +78,7 @@ class RecoveryService:
                 s.add(Revision(revision_id=revision_id,request_id=request.request_id,revision=request.version,
                     body_sha256=hashlib.sha256(combined.encode()).hexdigest(),
                     sealed_body=self.r._seal(Revision,revision_id,'sealed_body',{'text':combined})))
-                wf.status='active';gate.mode='open';gate.version+=1;gate.epoch+=1
+                wf.status='active';wf.blocker_reason=None;gate.mode='open';gate.version+=1;gate.epoch+=1
             elif action=='resume':
                 if wf.status not in ('paused','blocked'):raise ValueError('STALE_BINDING')
                 if wf.phase in ('prd_waiting','project_selection'):

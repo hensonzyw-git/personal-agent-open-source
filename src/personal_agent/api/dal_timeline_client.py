@@ -47,6 +47,8 @@ class TimelineTransport(FixedDalTransport):
                 valid_id(receipt['request_id'])
                 if type(receipt['version']) is not int or receipt['version']<1 or result['workflow_version']!=receipt['version']:raise ValueError
             if operation=='recovery' and (result.get('command_id')!=request_id or result.get('workflow_id')!=body['payload']['workflow_id'] or result.get('status') not in ('accepted','refused')):raise ValueError
+            if operation=='recovery' and result.get('status')=='refused':
+                if set(result)!={'command_id','workflow_id','status','reason'} or result['reason'] not in ('STALE_BINDING','RECONCILIATION_REQUIRED','PROPOSAL_REFRESH_REQUIRED','INPUT_LIMIT'):raise ValueError
             if operation=='decision' and (result.get('command_id')!=request_id or result.get('decision_id')!=body['payload']['decision_id'] or result.get('status') not in ('accepted','refused')):raise ValueError
             if operation=='decision' and result.get('status')=='refused':
                 if set(result)!={'command_id','decision_id','status','reason'} or result['reason'] not in ('STALE_BINDING','SCOPE_REQUIRED','AMBIGUOUS_TARGET','INPUT_NOT_AUTHORIZED','MESSAGE_ALREADY_CONSUMED','DELIVERY_PROBE_REQUIRED'):raise ValueError

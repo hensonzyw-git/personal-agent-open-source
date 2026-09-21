@@ -559,3 +559,94 @@ def test_retry_migration_preserves_old_unknown_and_blocks_unsafe_downgrade(bridg
         assert row.attempts==9 and row.status=='delivery_unknown' and row.delivery_error=='RETRY_EXHAUSTED'
     with pytest.raises(RuntimeError,match='evidence must be preserved'):
         db.downgrade(engine,'0021_dal_decision_projection')
+
+
+@pytest.mark.parametrize('case',['unique','multiple','empty','wrong_phase','model_text','foreign_source','mixed','chat'])
+def test_phone_supplement_uses_existing_intake_or_clarifies(engine,token_ring,keyring,bridge_world,case):
+    from test_runtime_v2_api import client_for, _auth, answer
+    from test_adk_runtime import fc
+    from personal_agent.auth.tokens import issue_access_token
+    from personal_agent_dal.storage.timeline_models import DevelopmentWorkflow
+    dal=bridge_world[3]
+    original=dal.submit(command_id='original',subject='device:dev-1',source_message_ref='original-source',body='Synthetic health acquisition')['request_id'] if case!='empty' else None
+    if case=='multiple':dal.submit(command_id='second',subject='device:dev-1',source_message_ref='second-source',body='Synthetic other request')
+    if case=='wrong_phase':
+        with dal.sessions() as s,s.begin():s.get(DevelopmentWorkflow,original).phase='project_routing'
+    def supplement(context,meta):
+        calls=[fc('dal_answer_clarification','supplement',arguments={'text':'forged'} if case=='model_text' else {},task=meta,
+            **({'write_source_refs':['foreign']} if case=='foreign_source' else {}))]
+        if case=='mixed':calls.append(fc('dal_submit_request','new',arguments={},task=meta))
+        return calls
+    client,calls,deps=client_for(engine,token_ring,keyring,[answer('聊别的话题') if case=='chat' else supplement])
+    with deps.session_factory() as s,s.begin():
+        device=s.get(Device,'dev-1');scopes=json.loads(device.scopes)+['dal.request','dal.read'];device.scopes=json.dumps(scopes)
+    deps.dal_timeline=TimelineBridge(session_factory=deps.session_factory,keyring=keyring,transport=bridge_world[0].transport)
+    token=issue_access_token(token_ring,device_id='dev-1',device_key_thumbprint='THUMB',scopes=scopes,allowed_tools_version='v1',now=NOW)
+    headers={**_auth(token_ring),'Authorization':'Bearer '+token,'X-Client-Wire-Version':'6'}
+    text='聊别的话题' if case=='chat' else '本期只做数据获取和存储，月度 review 后置'
+    response=client.post('/v1/chat/messages',headers=headers,json={'conversation_id':'c1','text':text})
+    assert response.status_code==(202 if case in ('multiple','empty','wrong_phase') else 200),response.text
+    with deps.session_factory() as s:
+        rows=list(s.scalars(select(DalTimelineCommand)))
+        assert len(rows)==(1 if case=='unique' else 0)
+        if rows:
+            body=deps.dal_timeline._open(rows[0].command_id,'sealed_body',rows[0].sealed_body)
+            assert body['command_kind']=='recovery'
+            assert body['payload']==dict(workflow_id=original,expected_version=1,action='clarification',text=text)
+    if case=='unique':
+        deps.dal_timeline.deliver_pending()
+        assert dal.detail(original)['request_version']==2
+        assert dal.detail(original)['text'].endswith(text)
+    elif original:assert dal.detail(original)['request_version']==1
+    assert dal.list_tasks(subject='device:dev-1')['total']==(0 if case=='empty' else 2 if case=='multiple' else 1)
+
+
+@pytest.mark.parametrize('reason',['STALE_BINDING','INPUT_LIMIT'])
+def test_rejected_supplement_is_visible_once_in_phone_timeline(bridge_world,reason):
+    from personal_agent.storage.models import ConversationEvent
+    from personal_agent.api.events import _entry
+    bridge,auth,_,dal,_=bridge_world
+    rid=dal.submit(command_id='intake',source_message_ref='intake-source',subject=auth.subject_id,
+        body='x'*32760 if reason=='INPUT_LIMIT' else 'Synthetic request')['request_id']
+    with bridge.sessions() as s,s.begin():
+        bridge.queue_recovery(auth,command_id='supplement',source_message_ref='phone-source',
+            payload=dict(workflow_id=rid,expected_version=99 if reason=='STALE_BINDING' else 1,
+                         action='clarification',text='Synthetic additional input'),_session=s)
+    bridge.deliver_pending();bridge.deliver_pending()
+    assert bridge.command(auth,'supplement')['status']=='refused'
+    with bridge.sessions() as s:
+        notices=[_entry(bridge.keyring,e).content for e in s.scalars(select(ConversationEvent))]
+    notices=[x for x in notices if x.get('kind')=='command.refused']
+    assert len(notices)==1
+    assert notices[0]['task_id']==rid and notices[0]['command_id']=='supplement'
+    assert notices[0]['reason']==reason
+    assert '未被接纳' in notices[0]['text']
+    assert dal.detail(rid)['request_version']==1
+
+
+@pytest.mark.parametrize('reason',[None,{},[],123,'untrusted body must not reach timeline'])
+def test_invalid_signed_recovery_reason_halts_visibly(bridge_world,reason):
+    from personal_agent_dal.timeline.transport import envelope
+    from personal_agent_dal.timeline.requests import digest
+    from personal_agent.storage.models import ConversationEvent
+    from personal_agent.api.events import _entry
+    bridge,auth,_,_,_=bridge_world
+    key=ec.generate_private_key(ec.SECP256R1())
+    bridge.transport.trusted_keys={'synthetic':key.public_key()}
+    def post(path,payload):
+        body=payload['body']
+        result=dict(command_id=body['command_id'],workflow_id='synthetic-workflow',status='refused',reason=reason)
+        return envelope(key=key,kid='synthetic',issuer='dal-timeline',audience='pa-timeline',
+            operation='recovery',request_id=body['command_id'],subject=auth.subject_id,scope='dal.request',
+            body=result,request_body_sha256=digest(body))
+    bridge.transport._post=post
+    with bridge.sessions() as s,s.begin():
+        bridge.queue_recovery(auth,command_id='invalid-reply',source_message_ref='phone',_session=s,
+            payload=dict(workflow_id='synthetic-workflow',expected_version=1,action='clarification',text='Synthetic input'))
+    bridge.deliver_pending();bridge.deliver_pending()
+    with bridge.sessions() as s:
+        command=s.get(DalTimelineCommand,'invalid-reply')
+        assert command.status=='delivery_unknown' and command.delivery_error=='RESPONSE_INVALID'
+        notices=[_entry(bridge.keyring,e).content for e in s.scalars(select(ConversationEvent))]
+    assert len(notices)==1 and notices[0]['kind']=='command.delivery_halted'
+    assert 'untrusted body' not in str(notices)

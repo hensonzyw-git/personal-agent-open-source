@@ -49,6 +49,10 @@ def business_rules(alias, *, today, available_tools=None):
             if not any(name.startswith('finance.') and name != 'finance.query_expenses' for name in available_tools):
                 common = ''
         return common + rules.format(categories='、'.join(ALLOWED_EXPENSE_CATEGORIES),today=today)
+    if alias.startswith('dal.'):
+        return ('开发需求的补充、更正、范围收窄或回答问题使用 dal.answer_clarification，禁止用 dal.submit_request 创建另一任务。'
+            '只有用户明确提出独立的新开发需求才用 dal.submit_request；目标不明先澄清。'
+            '无关聊天不修改开发任务；批准和项目选择只由 Host 的专用路径处理。')
     if alias.startswith('calendar.'):
         return CALENDAR_RULES
     return ''

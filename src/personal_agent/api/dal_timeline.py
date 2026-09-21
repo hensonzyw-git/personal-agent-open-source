@@ -204,6 +204,25 @@ class TimelineBridge:
                         row.status=result['status']
                         row.next_attempt_at=None
                         row.delivery_error=None
+                        if result['status']=='refused' and pending[1]['command_kind']=='recovery':
+                            from personal_agent.api import events
+                            from personal_agent.context.session_manager import SessionManager
+                            from personal_agent.context.config import default_context_config
+                            manager=self.projector.manager if self.projector else SessionManager(default_context_config())
+                            reason=result.get('reason')
+                            explanation={
+                                'STALE_BINDING':'任务版本或阶段已变化，请查看最新任务状态后再补充。',
+                                'RECONCILIATION_REQUIRED':'任务有尚未确认的执行结果，需先完成对账，请勿重复提交。',
+                                'INPUT_LIMIT':'累计需求文本超过长度上限，请缩短补充内容。',
+                                'PROPOSAL_REFRESH_REQUIRED':'请先刷新当前待审项，再针对新版本回复。',
+                            }.get(reason,'请查看当前任务状态后重试。')
+                            now=self.now();timeline=events.canonical_timeline_id(s,now=now)
+                            session_id=manager.system_event_session(s,conversation_id=timeline,now=now)
+                            events.append_event(s,self.keyring,conversation_id=timeline,session_id=session_id,
+                                turn_id='dal-command:'+id,event_type='development_update',operation_id=None,now=now,
+                                content=dict(schema_version='dal.timeline/1.0',task_id=pending[1]['payload']['workflow_id'],
+                                    command_id=id,kind='command.refused',reason=reason,
+                                    text='这次开发操作未被接纳。'+explanation))
                         if result['status']=='refused' and self.projector is not None and pending[1]['command_kind']=='decision':
                             from personal_agent.api import events
                             from personal_agent.storage.models import DalContextBinding

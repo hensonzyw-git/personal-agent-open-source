@@ -38,3 +38,43 @@ async def handle_recovery(owner):
         if owner.event_writer:owner.event_writer(session,result)
     owner.repo.finish(owner.lease,answer,now_ms=owner.now(),event_writer=writer)
     return True
+
+
+async def answer_clarification(owner, args):
+    """Resolve from a complete live set; the model supplies neither ID nor text."""
+    import asyncio
+    from personal_agent.runtime.run_store import RunStateError
+    from personal_agent.runtime.run_tools import ToolResult
+    if args.get('write_source_refs',args['task']['source_refs']) != [owner.anchor.event_id]:
+        raise RunStateError('dal_current_source_required')
+    bridge=owner.deps.dal_timeline
+    selected=None
+    try:
+        progress=await asyncio.to_thread(bridge.progress,owner.auth)
+        items=progress['items']
+        if not progress['complete']:
+            response='开发任务列表尚未完整读取，本次未修改任何需求，请稍后重试。'
+        elif len(items)!=1:
+            response='请明确要补充的开发任务，本次未修改或新建需求。'
+            if items:
+                response+='\n'+ '\n'.join(f"{item['task_id']}：{item['summary']}" for item in items)
+                response+='\n请回复“补充需求 任务ID：具体补充”。'
+        else:
+            item=items[0]
+            detail=await asyncio.to_thread(bridge.query,owner.auth,operation='request_detail',body={'request_id':item['task_id']})
+            if detail['phase']!='clarify' or detail['status'] not in ('active','blocked'):
+                response='该任务已不在需求澄清阶段，本次未修改需求。请针对当前待审文档提出修改意见。'
+            else:
+                selected=dict(workflow_id=item['task_id'],expected_version=detail['version'],action='clarification',text=owner.payload.text)
+                response='需求补充已记录，等待 DAL 校验当前任务版本并接纳；没有新建开发任务。'
+    except (ValueError,OSError,httpx.RequestError):
+        response='暂时无法核对开发任务，本次未修改或新建需求，请稍后重试。'
+    answer=dict(version=2,kind='conversation' if selected else 'clarification',
+        task_status='completed' if selected else 'waiting',coverage='complete' if selected else 'partial',text=response,evidence=[])
+    def writer(session,result):
+        bridge._identity(session,owner.auth,'dal.read')
+        bridge._identity(session,owner.auth,'dal.request')
+        if selected:bridge.queue_recovery(owner.auth,command_id=owner.operation_id,source_message_ref=owner.anchor.event_id,payload=selected,_session=session)
+        if owner.event_writer:owner.event_writer(session,result)
+    owner.repo.finish(owner.lease,answer,now_ms=owner.now(),event_writer=writer,metadata=owner.pending_metadata)
+    return ToolResult(answer,stop=True)
