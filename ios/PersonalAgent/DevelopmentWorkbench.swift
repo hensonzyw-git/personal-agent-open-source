@@ -139,17 +139,37 @@ struct DevelopmentTaskView: View {
     @State private var detail: DevelopmentTaskDetail?
     @State private var taskRoles: DevelopmentRoles?
     @State private var failed = false
+    @State private var showingSupplement = false
+    @State private var confirmingCancel = false
+    @State private var supplement = ""
+    @State private var working = false
+    @State private var actionMessage: String?
+    @State private var actionError: String?
     var body: some View {
         List {
             if let detail {
                 Text(DevelopmentState.label(phase: detail.phase, status: detail.status))
                 Text(detail.text).textSelection(.enabled)
-                Section("任务与恢复") {
-                    Text("任务编号：" + taskID).font(.caption).textSelection(.enabled)
-                    Text("在对话中发送以下命令，可补充需求或恢复当前任务：").font(.caption)
-                    Text("补充需求 \(taskID)：补充内容\n继续开发 \(taskID)\n刷新待审 \(taskID)")
-                        .font(.caption.monospaced()).textSelection(.enabled)
-                }
+                Section("任务操作") {
+                    if detail.phase == "clarify", ["active", "blocked"].contains(detail.status) {
+                        Button("补充需求") { showingSupplement = true }
+                    }
+                    if ["paused", "blocked"].contains(detail.status) {
+                        Button("继续开发") { Task { await perform(.resume) } }
+                    }
+                    if ["prd_waiting", "project_selection", "delivery_waiting"].contains(detail.phase) {
+                        Button("刷新待审内容") { Task { await perform(.refresh) } }
+                    }
+                    if detail.status == "active" {
+                        Button("暂停任务") { Task { await perform(.pause) } }
+                    }
+                    if !["completed", "cancelled"].contains(detail.status) {
+                        Button("取消任务", role: .destructive) { confirmingCancel = true }
+                    }
+                    if working { ProgressView("正在发送…") }
+                    if let actionMessage { Text(actionMessage).font(.footnote) }
+                    if let actionError { Text(actionError).foregroundStyle(.red).font(.footnote) }
+                }.disabled(working || model.chat?.busy != false)
                 Section("阶段") {
                     ForEach(detail.stages) { stage in
                         VStack(alignment: .leading, spacing: 4) {
@@ -198,9 +218,57 @@ struct DevelopmentTaskView: View {
             else { ProgressView("读取任务…") }
         }
         .navigationTitle("开发任务")
-        .task {
-            do { detail = try await model.developmentTask(id: taskID); taskRoles = try await model.developmentRoles(workflowID: taskID) }
-            catch { failed = true }
+        .sheet(isPresented: $showingSupplement) {
+            NavigationStack {
+                Form {
+                    Section("正在补充的需求") { Text(detail?.text ?? "正在读取任务") }
+                    Section("补充内容") {
+                        TextEditor(text: $supplement).frame(minHeight: 150).disabled(working)
+                    }
+                    if let actionError { Text(actionError).foregroundStyle(.red) }
+                }
+                .navigationTitle("补充需求")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("返回") { showingSupplement = false }.disabled(working)
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("发送") { Task { await perform(.supplement, text: supplement) } }
+                            .disabled(working || supplement.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                .interactiveDismissDisabled(working)
+            }
+        }
+        .confirmationDialog("取消这个开发任务？", isPresented: $confirmingCancel, titleVisibility: .visible) {
+            Button("取消任务", role: .destructive) { Task { await perform(.cancel) } }
+            Button("返回", role: .cancel) { }
+        } message: {
+            Text(detail?.text ?? "所选开发任务")
+        }
+        .task { await load() }
+        .refreshable { await load() }
+    }
+
+    @MainActor private func load() async {
+        do {
+            detail = try await model.developmentTask(id: taskID)
+            taskRoles = try await model.developmentRoles(workflowID: taskID)
+            failed = false
+        } catch { failed = true }
+    }
+
+    @MainActor private func perform(_ action: DevelopmentTaskAction, text: String = "") async {
+        guard !working, let chat = model.chat else { return }
+        working = true; actionError = nil; actionMessage = nil
+        defer { working = false }
+        do {
+            try await chat.sendDevelopmentAction(action, taskID: taskID, text: text)
+            if action == .supplement { supplement = ""; showingSupplement = false }
+            actionMessage = "操作已发送，是否接纳以对话中的任务更新为准。"
+            await load()
+        } catch {
+            actionError = error.localizedDescription
         }
     }
 }

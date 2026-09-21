@@ -399,6 +399,33 @@ final class ChatModel {
         }
     }
 
+    /// Task actions have their own input; never consume the ordinary composer,
+    /// selected photo, pending document reply, or another topic's clarification.
+    func sendDevelopmentAction(_ action: DevelopmentTaskAction, taskID: String, text: String = "") async throws {
+        guard !busy, !acceptanceStopping else { throw DevelopmentActionError.busy }
+        let command = try action.command(taskID: taskID, text: text)
+        busy = true
+        acceptanceWork += 1
+        defer { busy = false; acceptanceWork -= 1; sending = nil }
+        guard try loadPendingPhotoSend() == nil,
+              try await timeline.pendingSend() == nil else { throw DevelopmentActionError.busy }
+        sending = DevelopmentTaskAction.displayText(command)
+        do {
+            let receipt = try await timeline.send(text: command)
+            liveReceipt = receipt
+            lastError = nil
+            // A failed refresh after POST is not permission to resend.
+            do { try await timeline.syncNewer() }
+            catch { lastError = "操作已发送，结果同步暂未完成，请刷新对话查看。" }
+            await mirror(refreshLegacyOverrides: false)
+            await mirrorPendingSlots()
+        } catch {
+            lastError = describe(error)
+            await mirrorPendingSlots()
+            throw error
+        }
+    }
+
     func preparePhoto(_ data: Data) {
         do {
             preparedPhoto = try PhotoPreparation.prepare(data, capability: imageCapability)

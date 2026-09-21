@@ -593,6 +593,10 @@ def test_phone_supplement_uses_existing_intake_or_clarifies(engine,token_ring,ke
             body=deps.dal_timeline._open(rows[0].command_id,'sealed_body',rows[0].sealed_body)
             assert body['command_kind']=='recovery'
             assert body['payload']==dict(workflow_id=original,expected_version=1,action='clarification',text=text)
+    if case=='multiple':
+        visible=response.json()['result_envelope']['text']
+        assert original not in visible and '任务ID' not in visible
+        assert '点选对应任务' in visible
     if case=='unique':
         deps.dal_timeline.deliver_pending()
         assert dal.detail(original)['request_version']==2

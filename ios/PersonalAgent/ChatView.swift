@@ -369,7 +369,7 @@ struct ChatView: View {
                 ForEach(event.imageMediaIDs, id: \.self) { mediaID in
                     TimelinePhoto(mediaID: mediaID, model: model)
                 }
-                Text(text)
+                Text(DevelopmentTaskAction.displayText(text))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)

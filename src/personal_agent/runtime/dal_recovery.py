@@ -57,8 +57,8 @@ async def answer_clarification(owner, args):
         elif len(items)!=1:
             response='请明确要补充的开发任务，本次未修改或新建需求。'
             if items:
-                response+='\n'+ '\n'.join(f"{item['task_id']}：{item['summary']}" for item in items)
-                response+='\n请回复“补充需求 任务ID：具体补充”。'
+                response+='\n'+ '\n'.join(f"• {item['summary']}" for item in items)
+                response+='\n请打开手机的“开发”列表，点选对应任务，再点“补充需求”。'
         else:
             item=items[0]
             detail=await asyncio.to_thread(bridge.query,owner.auth,operation='request_detail',body={'request_id':item['task_id']})
