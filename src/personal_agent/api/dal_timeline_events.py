@@ -7,6 +7,15 @@ from personal_agent.api import events
 from personal_agent_dal.timeline.requests import digest
 
 
+def clarification_text(body):
+    questions=body.get('questions')
+    summary=body.get('summary')
+    if (not isinstance(summary,str) or not summary.strip() or not isinstance(questions,list)
+        or not questions or any(not isinstance(q,str) or not q.strip() for q in questions)):
+        raise ValueError('EVENT_STREAM_CONFLICT')
+    return summary+'\n\n需要你确认：\n'+'\n'.join(f'{i}. {q}' for i,q in enumerate(questions,1))
+
+
 class TimelineProjector:
     def __init__(self,bridge,session_manager):
         self.bridge,self.manager=bridge,session_manager
@@ -73,7 +82,7 @@ class TimelineProjector:
         body=item['body']
         content=dict(schema_version='dal.timeline/1.0',dal_event_id=item['event_id'],task_id=item['request_id'],
             kind=item['kind'],source_version=item['version'],observed_at=now.isoformat(),
-            text='DAL 已接收开发需求，等待项目确认；开发尚未开始。' if item['kind']=='request.accepted' else body.get('summary','开发任务状态已更新。'),
+            text='DAL 已接收开发需求，等待项目确认；开发尚未开始。' if item['kind']=='request.accepted' else clarification_text(body) if item['kind']=='workflow.clarification' else body.get('summary','开发任务状态已更新。'),
             artifact=body.get('artifact'),decision=body.get('decision'),status=body.get('status'),phase=body.get('phase'))
         event_id=events.append_event(s,self.bridge.keyring,conversation_id=timeline,session_id=session_id,
             turn_id='dal:'+item['event_id'],event_type='development_update',content=content,operation_id=None,now=now)
@@ -117,3 +126,33 @@ class TimelineProjector:
             s.add(DalConsumerCursor(consumer_id='pa-timeline',stream_id=stream_id,received_seq=item['seq'],acked_seq=0,tail_digest=item['digest'],version=1))
         else:
             cursor.received_seq,cursor.tail_digest,cursor.version=item['seq'],item['digest'],cursor.version+1
+
+    def repair_clarification(self, item):
+        """Append missing questions from a verified inbox event; never rewind ACK."""
+        from personal_agent.storage.models import ConversationEvent
+        required={'stream_id','seq','event_id','request_id','version','kind','body_digest','prev_digest','digest','body'}
+        if not isinstance(item,dict) or set(item)!=required or item['kind']!='workflow.clarification':
+            raise ValueError('EVENT_STREAM_CONFLICT')
+        header={k:v for k,v in item.items() if k not in ('body','digest')}
+        if digest(item['body'])!=item['body_digest'] or digest(header)!=item['digest']:
+            raise ValueError('EVENT_STREAM_CONFLICT')
+        text=clarification_text(item['body'])
+        def work(s):
+            inbox=s.scalar(select(DalEventInbox).where(DalEventInbox.event_id==item['event_id']))
+            if inbox is None or (inbox.stream_id,inbox.seq,inbox.digest,inbox.workflow_id)!=(item['stream_id'],item['seq'],item['digest'],item['request_id']):
+                raise ValueError('EVENT_STREAM_CONFLICT')
+            original=s.get(ConversationEvent,inbox.timeline_event_id)
+            content=events._entry(self.bridge.keyring,original).content
+            if content.get('text')==text:return original.event_id
+            if content.get('text')!=item['body']['summary']:raise ValueError('EVENT_STREAM_CONFLICT')
+            turn='dal-clarification-display-repair:'+item['event_id']
+            existing=s.scalar(select(ConversationEvent).where(ConversationEvent.turn_id==turn))
+            if existing:return existing.event_id
+            now=self.bridge.now()
+            timeline=events.canonical_timeline_id(s,now=now)
+            sid=self.manager.system_event_session(s,conversation_id=timeline,now=now)
+            return events.append_event(s,self.bridge.keyring,conversation_id=timeline,session_id=sid,
+                turn_id=turn,event_type='development_update',operation_id=None,now=now,
+                content=dict(content,text='补充显示此前遗漏的澄清问题：\n'+text,
+                    observed_at=now.isoformat(),projection_repair_of=original.event_id))
+        with self.bridge.sessions() as s:return run_write_transaction(s,lambda:work(s))

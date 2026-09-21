@@ -24,3 +24,12 @@ def test_source_context_is_explicit_and_independent_of_untrusted_inputs():
 def test_invalid_runtime_context_refused(key,value):
     kw=args();kw[key]=value
     with pytest.raises(SupervisorRefusal):build_prompt({'phase':'researching'},**kw)
+
+
+@pytest.mark.parametrize('phase',['clarify','project_routing'])
+def test_preproject_phase_does_not_treat_allocation_as_repository(phase):
+    raw=build_prompt({'phase':phase},**args()).decode()
+    assert 'No project has been selected' in raw
+    assert 'Do not inspect it' in raw
+    assert 'Inspect project source at' not in raw
+    assert 'not the user data source' in raw

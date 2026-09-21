@@ -76,7 +76,7 @@ class DurableRunHost:
             from personal_agent.runtime.run_catalog import obj, TASK
             from personal_agent.runtime.run_tools import RunToolSpec
             self.specs.append(RunToolSpec('dal_query_progress','dal.query_progress','read',
-                '查询所有正在进行的开发任务。服务端完整分页，直接在 Timeline 展示每项真实阶段和状态，不由模型筛选。',
+                '仅当用户要求任务列表或总体进度时查询；不能用于解释某条卡点或回答目录是什么。查询所有正在进行的开发任务。服务端完整分页，直接在 Timeline 展示每项真实阶段和状态，不由模型筛选。',
                 obj({'arguments':obj({}),'task':TASK})))
         if (deps.dal_timeline is not None and auth.client_wire_version >= 6
             and {'dal.read','dal.request'}.issubset(scopes) and {'dal.read','dal.request'}.issubset(auth.scopes)):
@@ -131,6 +131,8 @@ class DurableRunHost:
         if any(s.business_name not in declared for s in self.specs if not s.business_name.startswith(('agent.','search.','dal.'))):
             raise RunStateError('catalog_permission_changed')
         history=[c.text for c in self.envelope.components if c.kind.value in {'raw_event','memory','preferences'}]
+        from personal_agent.runtime.dal_history import development_history
+        history.extend(development_history(self))
         mandatory=[c.text for c in self.envelope.components if c.kind.value in {'checkpoint','clarification_context'}]
         domains={s.business_name.split('.')[0] for s in self.specs}
         today=self.deps.now().astimezone(__import__('zoneinfo').ZoneInfo('Asia/Shanghai')).date().isoformat()

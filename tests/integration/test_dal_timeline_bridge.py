@@ -654,3 +654,112 @@ def test_invalid_signed_recovery_reason_halts_visibly(bridge_world,reason):
         notices=[_entry(bridge.keyring,e).content for e in s.scalars(select(ConversationEvent))]
     assert len(notices)==1 and notices[0]['kind']=='command.delivery_halted'
     assert 'untrusted body' not in str(notices)
+
+
+def _clarification_event(bridge_world, questions):
+    from personal_agent_dal.storage.timeline_models import DevelopmentRequest
+    bridge,auth,_,dal,_=bridge_world
+    queue(bridge,auth);bridge.deliver_pending()
+    rid=dal.list_tasks(subject=auth.subject_id)['items'][0]['task_id']
+    with dal.sessions() as s,s.begin():
+        dal._append_event(s,s.get(DevelopmentRequest,rid),'workflow.clarification',
+            dict(summary='Synthetic blocker',questions=questions,status='blocked',phase='clarify'))
+    return bridge
+
+
+def test_clarification_questions_project_once_and_enter_same_session_history(bridge_world):
+    from personal_agent.api.dal_timeline_events import TimelineProjector
+    from personal_agent.context.session_manager import SessionManager
+    from personal_agent.context.config import default_context_config
+    from personal_agent.storage.models import ConversationEvent
+    from personal_agent.api import events
+    from personal_agent.runtime.dal_history import development_history
+    bridge=_clarification_event(bridge_world,['Import or sync?','Which types?'])
+    projector=TimelineProjector(bridge,SessionManager(default_context_config()))
+    projector.sync();projector.sync()
+    with bridge.sessions() as s,s.begin():
+        rows=list(s.scalars(select(ConversationEvent).order_by(ConversationEvent.timeline_sequence)))
+        assert len(rows)==2
+        content=events._entry(bridge.keyring,rows[-1]).content
+        assert '1. Import or sync?\n2. Which types?' in content['text']
+        anchor=events.append_event(s,bridge.keyring,conversation_id=rows[-1].conversation_id,
+            session_id=rows[-1].session_id,turn_id='question',event_type='user_message',
+            content={'text':'What directory?'},operation_id=None,now=bridge.now())
+    owner=SimpleNamespace(deps=SimpleNamespace(dal_timeline=bridge,session_factory=bridge.sessions,keyring=bridge.keyring),
+        auth=bridge_world[1],anchor=SimpleNamespace(event_id=anchor))
+    history=development_history(owner)
+    assert len(history)==2 and 'Import or sync?' in history[-1]
+    owner.auth=SimpleNamespace(scopes=[])
+    assert development_history(owner)==[]
+    assert projector.cursor()['received_seq']==2
+
+
+@pytest.mark.parametrize('questions',[None,[],{},'Question?',[None],[''],['valid',3]])
+def test_invalid_clarification_questions_do_not_advance_or_publish(bridge_world,questions):
+    from personal_agent.api.dal_timeline_events import TimelineProjector
+    from personal_agent.context.session_manager import SessionManager
+    from personal_agent.context.config import default_context_config
+    from personal_agent.storage.models import ConversationEvent
+    bridge=_clarification_event(bridge_world,questions)
+    projector=TimelineProjector(bridge,SessionManager(default_context_config()))
+    with pytest.raises(ValueError,match='EVENT_STREAM_CONFLICT'):projector.sync()
+    assert projector.cursor()['received_seq']==1
+    with bridge.sessions() as s:assert len(list(s.scalars(select(ConversationEvent))))==1
+
+
+def test_historical_question_repair_is_append_only_bound_and_idempotent(bridge_world,monkeypatch):
+    import personal_agent.api.dal_timeline_events as module
+    from personal_agent.context.session_manager import SessionManager
+    from personal_agent.context.config import default_context_config
+    from personal_agent.storage.models import ConversationEvent
+    from personal_agent.api import events
+    bridge=_clarification_event(bridge_world,['Import or sync?'])
+    projector=module.TimelineProjector(bridge,SessionManager(default_context_config()))
+    with monkeypatch.context() as patch:
+        patch.setattr(module,'clarification_text',lambda body:body['summary'])
+        projector.sync()
+    cursor=projector.cursor()
+    item=projector._call('events_read',{'after_seq':1,'limit':1})['items'][0]
+    repaired=projector.repair_clarification(item)
+    assert projector.repair_clarification(item)==repaired
+    assert projector.cursor()==cursor
+    with bridge.sessions() as s:
+        rows=list(s.scalars(select(ConversationEvent).order_by(ConversationEvent.timeline_sequence)))
+        assert len(rows)==3
+        assert events._entry(bridge.keyring,rows[1]).content['text']=='Synthetic blocker'
+        assert 'Import or sync?' in events._entry(bridge.keyring,rows[2]).content['text']
+    item['body']['questions']=['forged']
+    with pytest.raises(ValueError,match='EVENT_STREAM_CONFLICT'):projector.repair_clarification(item)
+
+
+def test_development_history_excludes_future_other_session_and_revoked_device(bridge_world):
+    from personal_agent.api.dal_timeline_events import TimelineProjector
+    from personal_agent.context.session_manager import SessionManager
+    from personal_agent.context.config import default_context_config
+    from personal_agent.storage.models import ConversationEvent,ContextSession
+    from personal_agent.api import events
+    from personal_agent.runtime.dal_history import development_history
+    bridge=_clarification_event(bridge_world,['Visible question?'])
+    projector=TimelineProjector(bridge,SessionManager(default_context_config()));projector.sync()
+    with bridge.sessions() as s,s.begin():
+        row=s.scalar(select(ConversationEvent).order_by(ConversationEvent.timeline_sequence.desc()))
+        anchor=events.append_event(s,bridge.keyring,conversation_id=row.conversation_id,session_id=row.session_id,
+            turn_id='question',event_type='user_message',content={'text':'Why?'},operation_id=None,now=bridge.now())
+        events.append_event(s,bridge.keyring,conversation_id=row.conversation_id,session_id=row.session_id,
+            turn_id='future',event_type='development_update',content={'text':'Future secret'},operation_id=None,now=bridge.now())
+        # Move the previously visible question into another existing closed session.
+        session=s.get(ContextSession,row.session_id)
+        session.status='closed'
+        session.closed_at=bridge.now()
+    with bridge.sessions() as s,s.begin():
+        sid=projector.manager.system_event_session(s,conversation_id=row.conversation_id,now=bridge.now())
+        other=events.append_event(s,bridge.keyring,conversation_id=row.conversation_id,session_id=sid,
+            turn_id='other',event_type='user_message',content={'text':'New topic'},operation_id=None,now=bridge.now())
+    owner=SimpleNamespace(deps=SimpleNamespace(dal_timeline=bridge,session_factory=bridge.sessions,keyring=bridge.keyring),
+        auth=bridge_world[1],anchor=SimpleNamespace(event_id=anchor))
+    assert 'Future secret' not in ''.join(development_history(owner))
+    owner.anchor.event_id=other
+    assert development_history(owner)==[]
+    with bridge.sessions() as s,s.begin():
+        device=s.get(Device,'phone');device.status='revoked';device.revoked_at=bridge.now()
+    with pytest.raises(ValueError,match='DEVICE_INACTIVE'):development_history(owner)

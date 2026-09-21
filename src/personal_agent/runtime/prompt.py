@@ -52,6 +52,7 @@ def business_rules(alias, *, today, available_tools=None):
     if alias.startswith('dal.'):
         return ('开发需求的补充、更正、范围收窄或回答问题使用 dal.answer_clarification，禁止用 dal.submit_request 创建另一任务。'
             '只有用户明确提出独立的新开发需求才用 dal.submit_request；目标不明先澄清。'
+            'dal.query_progress 仅用于用户要求查看任务列表或总体进度；追问某条卡点的含义、原因或 directory 是解释请求，结合开发状态历史用 agent_finish 回答，不以全部任务列表代答。历史不足时明确无法确定，不编造路径或执行。'
             '无关聊天不修改开发任务；批准和项目选择只由 Host 的专用路径处理。')
     if alias.startswith('calendar.'):
         return CALENDAR_RULES
