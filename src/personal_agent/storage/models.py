@@ -1312,6 +1312,7 @@ register_run_tables(Base.metadata)
 class DalTimelineCommand(Base):
     """Encrypted PA outbox; transport completion never implies execution."""
     __tablename__ = 'dal_timeline_commands'
+    submission_sha256: Mapped[str | None] = mapped_column(Text)
     command_id: Mapped[str] = mapped_column(Text, primary_key=True)
     device_id: Mapped[str] = mapped_column(ForeignKey('devices.device_id', ondelete='RESTRICT'), nullable=False)
     key_thumbprint: Mapped[str] = mapped_column(Text, nullable=False)
@@ -1406,3 +1407,18 @@ class DalNotificationMembership(Base):
     __tablename__ = 'dal_notification_memberships'
     notification_id: Mapped[str] = mapped_column(ForeignKey('dal_notifications.notification_id'), primary_key=True)
     batch_id: Mapped[str] = mapped_column(ForeignKey('dal_notification_batches.batch_id'), nullable=False)
+
+
+class DalAuthorizationContext(Base):
+    __tablename__='dal_authorization_contexts'
+    context_id: Mapped[str]=mapped_column(Text,primary_key=True)
+    device_id: Mapped[str]=mapped_column(ForeignKey('devices.device_id',ondelete='RESTRICT'),nullable=False)
+    key_thumbprint: Mapped[str]=mapped_column(Text,nullable=False)
+    proposal_id: Mapped[str]=mapped_column(Text,nullable=False)
+    binding_digest: Mapped[str]=mapped_column(Text,nullable=False)
+    sealed_context: Mapped[dict[str,Any]]=mapped_column(EncryptedEnvelope,nullable=False)
+    expires_at: Mapped[datetime]=mapped_column(UtcTimestamp,nullable=False)
+    token_jti: Mapped[str|None]=mapped_column(Text)
+    token_expires_at: Mapped[datetime|None]=mapped_column(UtcTimestamp)
+    command_id: Mapped[str|None]=mapped_column(ForeignKey('dal_timeline_commands.command_id'))
+    __table_args__=(UniqueConstraint('device_id','key_thumbprint','proposal_id',name='authorization_context_device'),)

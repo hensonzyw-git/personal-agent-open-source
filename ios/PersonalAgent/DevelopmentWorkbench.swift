@@ -150,6 +150,11 @@ struct DevelopmentTaskView: View {
             if let detail {
                 Text(DevelopmentState.label(phase: detail.phase, status: detail.status))
                 Text(detail.text).textSelection(.enabled)
+                if let session = model.developmentAuthorizationSession {
+                    Section("项目授权") {
+                        NavigationLink("查看或核对项目权限") { DevelopmentAuthorizationView(session: session, requestID: taskID) }
+                    }
+                }
                 Section("任务操作") {
                     if detail.phase == "clarify", ["active", "blocked"].contains(detail.status) {
                         Button("补充需求") { showingSupplement = true }

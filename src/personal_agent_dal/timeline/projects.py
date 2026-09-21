@@ -14,6 +14,9 @@ def catalog(requests,session,request_id):
         value=requests._open(Grant,grant.grant_id,'sealed_grant',grant.sealed_grant)
         if digest(value)!=grant.digest:raise ValueError('INPUT_INTEGRITY_FAILED')
         if value['request_id']==request_id:
+            from personal_agent_dal.timeline.phone_authorization import execution_policy
+            try:execution_policy(requests,session,grant)
+            except ValueError:continue
             result.append(dict(candidate_key=grant.grant_id,project_id=grant.project_id,grant_id=grant.grant_id,
                 display_name=value['display_name'],kind=value['kind']))
     return result

@@ -615,8 +615,8 @@ struct ClientWireVersionTests {
     func versionIsTheImplementedOne() {
         // v4 adds model-led chat results to v3's calendar sync epoch.
         // This build decodes ResultEnvelope v2 and declares that capability.
-        #expect(ClientWireVersion.version == 6)
-        #expect(ClientWireVersion.value == "6")
+        #expect(ClientWireVersion.version == 7)
+        #expect(ClientWireVersion.value == "7")
         #expect(ClientWireVersion.header == "X-Client-Wire-Version")
     }
 
@@ -659,5 +659,45 @@ struct ClientWireVersionTests {
             HeaderStubProtocol.unanimousHeader(ClientWireVersion.header)
                 == ClientWireVersion.value
         )
+    }
+}
+
+extension DeviceSessionTests {
+    @Test("cold start reconciles a durable authorization before any resend")
+    func coldStartAuthorizationReconciles() async throws {
+        StubProtocol.reset()
+        let posts = Box(0)
+        let status = Box("delivery_unknown")
+        let command = Box("")
+        StubProtocol.handler = { request in
+            let path = request.url!.path
+            if path.contains("enroll") { return .init(status:201,body:enrolledBody) }
+            if path.contains("challenge") { return .init(status:200,body:challengeBody()) }
+            if path.contains("token") { return .init(status:200,body:tokenBody(value:"token")) }
+            if path.hasSuffix("/authorization/previews") {
+                posts.value += 1; command.value = request.value(forHTTPHeaderField:"Idempotency-Key")!
+                return .init(status:503,body:json(["detail":"DAL_UNAVAILABLE"]))
+            }
+            if path.contains("/commands/") {
+                let final = status.value == "refused"
+                return .init(status:200,body:json(["schema_version":"dal.command-status/1.0","command_id":command.value,
+                    "status":status.value,"receipt": final ? ["command_id":command.value,"status":"refused","command_kind":"authorization_preview"] as Any : NSNull(),
+                    "delivery_halted":false,"delivery_error":NSNull(),"dispatch_attempted":true]))
+            }
+            return .init(status:500,body:Data())
+        }
+        let store = InMemoryCredentialStore()
+        let first = try session(store:store)
+        _ = try await first.enroll(code:"code",displayName:"Phone")
+        await #expect(throws:(any Error).self) { try await first.submitDevelopmentAuthorization(requestID:"request",target:"request",kind:"authorization_preview",body:[:]) }
+        #expect(try await first.pendingDevelopmentAuthorization() != nil)
+        let restored = try session(store:store)
+        _ = try await restored.restore()
+        #expect(try await restored.resumeDevelopmentAuthorization()?.terminal == false)
+        #expect(posts.value == 1)
+        status.value = "refused"
+        #expect(try await restored.resumeDevelopmentAuthorization()?.terminal == true)
+        #expect(try await restored.pendingDevelopmentAuthorization() == nil)
+        #expect(posts.value == 1)
     }
 }

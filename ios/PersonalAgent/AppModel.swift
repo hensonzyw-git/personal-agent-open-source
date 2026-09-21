@@ -48,6 +48,7 @@ final class AppModel {
 
     private let store: CredentialStore = KeychainCredentialStore()
     private var session: DeviceSession?
+    var developmentAuthorizationSession: DeviceSession? { session }
     private var chatTimeline: ChatTimeline?
     private var reviewCenter: ReviewCenter?
     /// The calendar mirror's production driver (review R5). Built with the
@@ -478,6 +479,7 @@ final class AppModel {
                     self?.describe(error) ?? String(describing: error)
                 }
             )
+            chat?.developmentAuthorizationSession = session
             chat?.loadDevelopmentContext = { id in try await session.developmentReplyContext(eventID: id) }
             chat?.loadDevelopmentDocument = { id in try await session.developmentDocument(id: id) }
             // The pre-send mirror top-up (review R5): the same engine the

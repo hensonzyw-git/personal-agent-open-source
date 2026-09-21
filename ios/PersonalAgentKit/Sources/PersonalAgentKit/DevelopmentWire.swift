@@ -50,12 +50,14 @@ public struct DevelopmentUpdate: Sendable, Equatable {
     public let phase: String?
     public let status: String?
     public let artifactID: String?
+    public let authorizationRequired: Bool
     public init?(content: [String: JSONValue]) {
         guard content["schema_version"]?.stringValue == "dal.timeline/1.0", let text = content["text"]?.stringValue else { return nil }
         let task = content["task_id"]?.stringValue
         let haltedCommand = content["kind"]?.stringValue == "command.delivery_halted"
             && !(content["command_id"]?.stringValue ?? "").isEmpty
         guard !(task ?? "").isEmpty || haltedCommand else { return nil }
+        authorizationRequired = content["authorization"]?.objectValue?["schema_version"]?.stringValue == "dal.authorization-entry/1.0"
         taskID = task; self.text = text; phase = content["phase"]?.stringValue; status = content["status"]?.stringValue
         artifactID = content["artifact"]?.objectValue?["artifact_id"]?.stringValue
     }

@@ -129,6 +129,7 @@ final class ChatModel {
     }
 
     var developmentReplyContext: DevelopmentReplyContext?
+    var developmentAuthorizationSession: DeviceSession?
     var loadDevelopmentContext: ((String) async throws -> DevelopmentReplyContext)?
     var loadDevelopmentDocument: ((String) async throws -> DevelopmentDocument)?
     private let timeline: ChatTimeline

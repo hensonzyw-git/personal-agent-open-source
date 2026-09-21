@@ -19,10 +19,10 @@ class Claims(Closed):
     iat: StrictInt
     exp: StrictInt
     domain: Literal['dal.timeline-command/1.0','dal.timeline-response/1.0']
-    operation: Literal['submit','request_detail','request_list','events_read','events_ack','artifact_read','roles_read','decision','recovery','decision_status']
+    operation: Literal['submit','request_detail','request_list','events_read','events_ack','artifact_read','roles_read','decision','recovery','decision_status','authorization_preview','authorization_approve','authorization_read','authorization_status','authorization_receipt']
     request_id: Id
     subject: Id
-    scope: Literal['dal.read','dal.request','dal.events','dal.prd.decide','dal.delivery.decide']
+    scope: Literal['dal.read','dal.request','dal.events','dal.prd.decide','dal.delivery.decide','dal.project.authorize']
     body_sha256: Digest
     request_body_sha256: Digest | None = None
 
@@ -144,13 +144,28 @@ class TimelineEndpoint:
         claims,body=verify_envelope(value,keys=self.trusted_keys,issuer='pa-timeline',audience='dal-timeline')
         request_digest=digest(body)
         operation=claims['operation']
-        if command!=(operation in ('submit','decision','recovery')):
+        if command!=(operation in ('submit','decision','recovery','authorization_preview','authorization_approve')):
             raise TimelineRefusal('SCOPE_REQUIRED')
         decision_body=DecisionCommand.model_validate(body) if operation=='decision' else None
-        expected=('dal.request' if decision_body.payload.kind=='project_selection' else 'dal.'+decision_body.payload.kind+'.decide') if decision_body else 'dal.events' if operation in ('events_read','events_ack') else 'dal.request' if command else 'dal.read'
+        expected=('dal.request' if decision_body.payload.kind=='project_selection' else 'dal.'+decision_body.payload.kind+'.decide') if decision_body else 'dal.events' if operation in ('events_read','events_ack') else 'dal.project.authorize' if operation in ('authorization_preview','authorization_approve') else 'dal.request' if command else 'dal.read'
         if claims['scope']!=expected:
             raise TimelineRefusal('SCOPE_REQUIRED')
-        if operation in ('events_read','events_ack'):
+        if operation.startswith('authorization_'):
+            from personal_agent_dal.timeline.phone_authorization import ProjectAuthorizationService
+            from personal_agent_dal.timeline.authorization_contracts import AuthorizationCommand,AuthorizationRead,AuthorizationStatus,AuthorizationReceiptRead
+            service=ProjectAuthorizationService(self.requests)
+            if command:
+                if self.kill_switch():raise TimelineRefusal('DAL_UNAVAILABLE')
+                parsed=AuthorizationCommand.model_validate(body)
+                if parsed.command_id!=claims['request_id'] or parsed.command_kind!=operation:raise TimelineRefusal('ASSERTION_INVALID')
+                handler=service.preview if operation=='authorization_preview' else service.approve
+                result=handler(command_id=parsed.command_id,subject=claims['subject'],payload=parsed.payload)
+            elif operation=='authorization_read':
+                result=service.read(**AuthorizationRead.model_validate(body).model_dump(),subject=claims['subject'])
+            elif operation=='authorization_status':
+                result=service.proposal_status(**AuthorizationStatus.model_validate(body).model_dump(),subject=claims['subject'])
+            else:result=service.receipt(**AuthorizationReceiptRead.model_validate(body).model_dump(),subject=claims['subject'])
+        elif operation in ('events_read','events_ack'):
             from personal_agent_dal.timeline.events import EventStream
             stream=EventStream(self.requests)
             result=stream.read(**EventRead.model_validate(body).model_dump()) if operation=='events_read' else stream.ack(**EventAck.model_validate(body).model_dump())

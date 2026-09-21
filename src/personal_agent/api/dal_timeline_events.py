@@ -84,6 +84,10 @@ class TimelineProjector:
             kind=item['kind'],source_version=item['version'],observed_at=now.isoformat(),
             text='DAL 已接收开发需求，等待项目确认；开发尚未开始。' if item['kind']=='request.accepted' else clarification_text(body) if item['kind']=='workflow.clarification' else body.get('summary','开发任务状态已更新。'),
             artifact=body.get('artifact'),decision=body.get('decision'),status=body.get('status'),phase=body.get('phase'))
+        if item['kind'].startswith('workflow.authorization_') or body.get('reason')=='PROJECT_AUTHORIZATION_REQUIRED':
+            content['authorization']=dict(schema_version='dal.authorization-entry/1.0')
+            if body.get('reason')=='PROJECT_AUTHORIZATION_REQUIRED':
+                content['text']+=' 请在新版 App 的任务页面打开项目授权卡片；普通聊天回复不会授予项目权限。'
         event_id=events.append_event(s,self.bridge.keyring,conversation_id=timeline,session_id=session_id,
             turn_id='dal:'+item['event_id'],event_type='development_update',content=content,operation_id=None,now=now)
         from personal_agent.storage.models import DalDecisionState, DalContextBinding

@@ -11,7 +11,7 @@ from personal_agent_core.manifest import canonical_json
 from personal_agent_core.sqlite import run_write_transaction
 from personal_agent.api.notifications import PushSendError
 
-NOTIFY=frozenset({'decision.requested','workflow.blocked','workflow.clarification','workflow.completed'})
+NOTIFY=frozenset({'decision.requested','workflow.blocked','workflow.clarification','workflow.completed','authorization.resolved'})
 IMMEDIATE=frozenset({'workflow.blocked'})
 
 

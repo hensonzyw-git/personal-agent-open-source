@@ -25,11 +25,11 @@ class TimelineTransport(FixedDalTransport):
                 except (ValueError,UnicodeError,RecursionError):raise ValueError('DAL_RESPONSE_INVALID') from None
 
     def call(self, *, operation, request_id, subject, body):
-        if operation not in ('submit','request_detail','request_list','events_read','events_ack','artifact_read','roles_read','decision','recovery','decision_status'):raise ValueError('INVALID_ARGUMENT')
-        scope=('dal.request' if body['payload']['kind']=='project_selection' else 'dal.'+body['payload']['kind']+'.decide') if operation=='decision' else 'dal.events' if operation.startswith('events_') else 'dal.request' if operation in ('submit','recovery') else 'dal.read'
+        if operation not in ('submit','request_detail','request_list','events_read','events_ack','artifact_read','roles_read','decision','recovery','decision_status','authorization_preview','authorization_approve','authorization_read','authorization_status','authorization_receipt'):raise ValueError('INVALID_ARGUMENT')
+        scope=('dal.request' if body['payload']['kind']=='project_selection' else 'dal.'+body['payload']['kind']+'.decide') if operation=='decision' else 'dal.project.authorize' if operation in ('authorization_preview','authorization_approve') else 'dal.events' if operation.startswith('events_') else 'dal.request' if operation in ('submit','recovery') else 'dal.read'
         request=envelope(key=self.key,kid=self.kid,issuer=self.issuer,audience=self.audience,
             operation=operation,request_id=request_id,subject=subject,scope=scope,body=body)
-        response=self._post('/internal/development/events' if operation.startswith('events_') else '/internal/development/commands' if operation in ('submit','decision','recovery') else '/internal/development/query',request)
+        response=self._post('/internal/development/events' if operation.startswith('events_') else '/internal/development/commands' if operation in ('submit','decision','recovery','authorization_preview','authorization_approve') else '/internal/development/query',request)
         try:
             claims,result=verify_envelope(response,keys=self.trusted_keys,issuer='dal-timeline',audience='pa-timeline')
             from personal_agent_dal.timeline.requests import digest
@@ -52,6 +52,10 @@ class TimelineTransport(FixedDalTransport):
             if operation=='decision' and (result.get('command_id')!=request_id or result.get('decision_id')!=body['payload']['decision_id'] or result.get('status') not in ('accepted','refused')):raise ValueError
             if operation=='decision' and result.get('status')=='refused':
                 if set(result)!={'command_id','decision_id','status','reason'} or result['reason'] not in ('STALE_BINDING','SCOPE_REQUIRED','AMBIGUOUS_TARGET','INPUT_NOT_AUTHORIZED','MESSAGE_ALREADY_CONSUMED','DELIVERY_PROBE_REQUIRED'):raise ValueError
+            if operation in ('authorization_preview','authorization_approve'):
+                from personal_agent_dal.timeline.authorization_contracts import validate_receipt
+                validate_receipt(result,kind=operation,command_id=request_id,subject=subject,payload=body['payload'])
+            if operation=='authorization_receipt' and (set(result)!={'command_id','receipt'} or result['command_id']!=body['command_id']):raise ValueError
             return result
         except (ValueError,TypeError,KeyError):raise ValueError('DAL_RESPONSE_INVALID') from None
 

@@ -20,6 +20,8 @@ class RepositoryExecutor:
         self.supervisor,self.reservation,self.config,self.inputs=supervisor,reservation,config,inputs
         self.inventory,self.attempt,self.heartbeat=inventory,attempt,heartbeat
         validate_executor(config,supervisor)
+        from personal_agent_dal.worker.project_policy import validate_project_policy
+        validate_project_policy(config,inputs)
         self.git=str(verify_executable(config['git_pin']))
         self.work=Path(reservation['workspace'])
         self.environment={'PATH':str(Path(self.git).parent)+':/usr/bin:/bin','HOME':reservation['temp'],
@@ -32,6 +34,8 @@ class RepositoryExecutor:
     def run(self,args,*,cwd=None,data=None,raw=False):
         self.supervisor.validate(self.reservation['reservation_id'])
         gitdir=Path(self.reservation['git'])/'repository'
+        from personal_agent_dal.worker.project_policy import validate_project_policy
+        validate_project_policy(self.config,self.inputs)
         target=Path(cwd) if cwd is not None else self.work
         prefix=[]
         if target==self.work and gitdir.is_dir():
@@ -74,7 +78,9 @@ class RepositoryExecutor:
         root=_absolute(grant['root'])
         if grant['kind']=='existing':
             if any(self.work.iterdir()) or any(Path(self.reservation['git']).iterdir()):raise SupervisorRefusal('WORKSPACE_PREPARATION_UNKNOWN')
-            base=self.run(['rev-parse','HEAD'],cwd=root)
+            policy=self.inputs.get('project_policy')
+            base=policy['base_sha'] if policy else self.run(['rev-parse','HEAD'],cwd=root)
+            if policy and self.run(['rev-parse','--verify',base+'^{commit}'],cwd=root)!=base:raise SupervisorRefusal('PROJECT_BASE_CHANGED')
             self.run(['-c','protocol.file.allow=always','clone','--no-local','--no-checkout','--separate-git-dir',
                 str(Path(self.reservation['git'])/'repository'),'--',str(root),str(self.work)])
             self.run(['remote','remove','origin'])
@@ -85,7 +91,12 @@ class RepositoryExecutor:
             if any(self.work.iterdir()) or any(Path(self.reservation['git']).iterdir()):raise SupervisorRefusal('WORKSPACE_PREPARATION_UNKNOWN')
             self.run(['init','--separate-git-dir',str(Path(self.reservation['git'])/'repository'),str(self.work)])
             tree=self.run(['mktree'],data=b'')
-            base=self.run(['commit-tree',tree],data=b'DAL local project bootstrap\n')
+            policy=self.inputs.get('project_policy')
+            original_dates={k:self.environment[k] for k in ('GIT_AUTHOR_DATE','GIT_COMMITTER_DATE')}
+            if policy:self.environment.update({k:'946684800 +0000' for k in original_dates})
+            try:base=self.run(['commit-tree',tree],data=b'DAL local project bootstrap\n')
+            finally:self.environment.update(original_dates)
+            if policy and base!=policy['base_sha']:raise SupervisorRefusal('PROJECT_BASE_CHANGED')
             self.run(['update-ref','HEAD',base,'0'*40])
         branch='refs/heads/codex/dal-'+self.inputs['owner']['workflow_id']
         self.run(['update-ref',branch,base,'0'*40])

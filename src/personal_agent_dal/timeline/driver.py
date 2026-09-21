@@ -303,6 +303,10 @@ class WorkflowDriver:
                     return self._block(s,wf,'PROJECT_AUTHORIZATION_REQUIRED')
                 inputs['project']=dict(project_id=project.project_id,grant_id=grant.grant_id,grant_version=grant.version,grant_digest=grant.digest)
                 inputs['authorization']=self.r._open(Grant,grant.grant_id,'sealed_grant',grant.sealed_grant)
+                from personal_agent_dal.timeline.phone_authorization import execution_policy
+                try:policy=execution_policy(self.r,s,grant)
+                except ValueError:return self._block(s,wf,'PROJECT_AUTHORIZATION_REQUIRED')
+                if policy is not None:inputs['project_policy']=policy
                 from personal_agent_dal.storage.timeline_models import DevelopmentWorkspace
                 workspace=s.get(DevelopmentWorkspace,workflow_id)
                 if workspace:
@@ -379,6 +383,8 @@ class WorkflowDriver:
                 or grant.digest!=selected['grant_digest']):
                 raise ValueError('PROJECT_AUTHORIZATION_REQUIRED')
             body=self.r._open(Grant,grant.grant_id,'sealed_grant',grant.sealed_grant)
+            from personal_agent_dal.timeline.phone_authorization import execution_policy
+            if inputs.get('project_policy')!=execution_policy(self.r,s,grant):raise ValueError('PROJECT_AUTHORIZATION_REQUIRED')
             if digest(body)!=grant.digest:raise ValueError('INPUT_INTEGRITY_FAILED')
             required={'read','write'} if step.phase in ('coding','fix','stage_commit') else {'read'}
             if body.get('request_id')!=wf.request_id or not required<=set(body.get('actions',[])):
@@ -394,11 +400,21 @@ class WorkflowDriver:
             if execution.execution_id!=attempt_id:raise ValueError('RESULT_SOURCE_INVALID')
             result_body=validate_result(step.phase,result)
             sha=digest(result_body)
-            if step.status=='completed':
+            if step.status in ('completed','retired') and step.result_digest is not None:
                 if step.result_digest!=sha:raise ValueError('RESULT_CONFLICT')
-                return dict(step_id=step_id,status='completed',result_digest=sha)
+                return dict(step_id=step_id,status=step.status,result_digest=sha)
             if step.status not in ('dispatch_started','result_unknown'):raise ValueError('RESULT_SOURCE_INVALID')
-            wf,gate=self._current(s,step)
+            try:wf,gate=self._current(s,step)
+            except ValueError as exc:
+                inputs=self.r._open(Step,step_id,'sealed_input',step.sealed_input)
+                if inputs.get('project_policy') is None or str(exc)!='PROJECT_AUTHORIZATION_REQUIRED':raise
+                # A revoked template stops advancement, not receipt observation.
+                step.status='retired';step.result_digest=sha
+                step.sealed_result=self.r._seal(Step,step_id,'sealed_result',result_body)
+                wf=s.get(Workflow,step.workflow_id)
+                if wf.status=='active':self._block(s,wf,'PROJECT_AUTHORIZATION_REQUIRED')
+                self._event(s,wf,'workflow.result_observed','执行回执已核对；项目授权变化，未推进开发。',step_id=step_id)
+                return dict(step_id=step_id,status='retired',result_digest=sha)
             inputs=self.r._open(Step,step_id,'sealed_input',step.sealed_input)
             if digest(inputs)!=step.input_digest:raise ValueError('INPUT_INTEGRITY_FAILED')
             if step.phase in ('design_review','delivery_revision_review'):

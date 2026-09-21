@@ -194,7 +194,7 @@ class PublicationService:
     def publish(self,inputs,manifest,objects,guard):
         repository=self.adapter._settings.repository
         info=self.call('GET','')
-        base=info.get('default_branch')
+        base=inputs['project_policy']['base_branch'] if inputs.get('project_policy') else info.get('default_branch')
         if not isinstance(base,str) or not base:raise ValueError('GITHUB_BASE_INVALID')
         base_sha=inputs['delivery']['workspace']['base_sha']
         current=self.call('GET','/git/ref/heads/'+quote(base,safe=''))

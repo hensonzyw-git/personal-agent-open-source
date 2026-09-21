@@ -19,6 +19,8 @@ class TimelineBridge:
         self._delivery_lock=threading.Lock()
         self.push_sender = None
         self.projector=None
+        import os
+        self.project_authorization_enabled=os.environ.get("PERSONAL_AGENT_DAL_PROJECT_AUTHORIZATION_ENABLED")=="1"
 
     def _identity(self,s,auth,scope):
         row=s.execute(select(Device.__table__).where(Device.device_id==auth.device_id)).mappings().one_or_none()
@@ -100,11 +102,31 @@ class TimelineBridge:
         with self.sessions() as s:
             self._identity(s,auth,'dal.read')
             row=s.scalar(select(DalTimelineCommand).where(DalTimelineCommand.command_id==command_id))
-            if row is None or row.device_id!=auth.device_id:raise ValueError('COMMAND_NOT_FOUND')
+            if row is None or row.device_id!=auth.device_id or row.key_thumbprint!=auth.key_thumbprint:raise ValueError('COMMAND_NOT_FOUND')
             return self._response(row)
 
+    def command_status(self, auth, command_id):
+        """Persistent read model; notification delivery is not command evidence."""
+        valid_id(command_id)
+        with self.sessions() as s:
+            self._identity(s, auth, 'dal.read')
+            row=s.scalar(select(DalTimelineCommand).where(DalTimelineCommand.command_id==command_id))
+            if row is None or row.device_id!=auth.device_id or row.key_thumbprint!=auth.key_thumbprint:raise ValueError('COMMAND_NOT_FOUND')
+            errors={'INPUT_INTEGRITY_FAILED','IDENTITY_REVOKED','RETRY_EXHAUSTED','RESPONSE_INVALID'}
+            if row.delivery_error is not None and row.delivery_error not in errors:
+                raise ValueError('COMMAND_STATE_INVALID')
+            final=row.status in ('accepted','refused')
+            valid=(row.status=='queued' and row.attempts==0 and row.delivery_error in (None,'INPUT_INTEGRITY_FAILED')
+                or row.status=='cancelled' and row.attempts==0 and row.delivery_error=='IDENTITY_REVOKED'
+                or row.status=='delivery_unknown' and row.attempts>0
+                or final and row.attempts>0 and row.delivery_error is None)
+            if not valid or final!=(row.sealed_receipt is not None):raise ValueError('COMMAND_STATE_INVALID')
+            return dict(schema_version='dal.command-status/1.0',**self._response(row),
+                delivery_halted=row.delivery_error is not None,delivery_error=row.delivery_error,
+                dispatch_attempted=row.attempts>0)
+
     def query(self,auth,*,operation,body):
-        if operation not in ('request_detail','request_list','artifact_read','roles_read','decision_status'):raise ValueError('INVALID_ARGUMENT')
+        if operation not in ('request_detail','request_list','artifact_read','roles_read','decision_status','authorization_read','authorization_status','authorization_receipt'):raise ValueError('INVALID_ARGUMENT')
         with self.sessions() as s:self._identity(s,auth,'dal.read')
         result=self.transport.call(operation=operation,request_id=new_id(),subject=auth.subject_id,body=body)
         with self.sessions() as s:self._identity(s,auth,'dal.read')
@@ -155,6 +177,8 @@ class TimelineBridge:
         # retain the same command ID and DAL's atomic idempotency contract.
         if not self._delivery_lock.acquire(blocking=False):return
         try:
+            from personal_agent.api.dal_authorizations import reconcile
+            reconcile(self)
             with self.sessions() as s:
                 ids=list(s.scalars(select(DalTimelineCommand.command_id).where(
                     DalTimelineCommand.status.in_(['queued','delivery_unknown']),
@@ -170,10 +194,22 @@ class TimelineBridge:
                     try:body=self._open(id,'sealed_body',row.sealed_body)
                     except ValueError:
                         self._halt_delivery(s,row,'INPUT_INTEGRITY_FAILED');return None
-                    scope=('dal.request' if body['payload']['kind']=='project_selection' else 'dal.'+body['payload']['kind']+'.decide') if body['command_kind']=='decision' else 'dal.request'
+                    if body['command_kind'] in ('authorization_preview','authorization_approve'):
+                        scope='dal.project.authorize'
+                        if not self.project_authorization_enabled:return None
+                        from personal_agent_dal.timeline.authorization_contracts import aware_time
+                        expiry=body['payload'].get('confirmation_expires_at') or body['payload'].get('grant_expires_at')
+                        if row.attempts>0 and expiry is not None and aware_time(expiry)<=self.now():
+                            self._halt_delivery(s,row,'RETRY_EXHAUSTED');return None
+                    elif body['command_kind']=='decision':
+                        scope='dal.request' if body['payload']['kind']=='project_selection' else 'dal.'+body['payload']['kind']+'.decide'
+                    elif body['command_kind'] in ('submit','recovery'):scope='dal.request'
+                    else:self._halt_delivery(s,row,'INPUT_INTEGRITY_FAILED');return None
                     auth=SimpleNamespace(device_id=row.device_id,subject_id='device:'+row.device_id,
-                        key_thumbprint=row.key_thumbprint,scopes=[scope])
-                    try:self._identity(s,auth,scope)
+                        key_thumbprint=row.key_thumbprint,scopes=[scope,'dal.read'])
+                    try:
+                        self._identity(s,auth,scope)
+                        if scope=='dal.project.authorize':self._identity(s,auth,'dal.read')
                     except ValueError:
                         if row.attempts==0:row.status='cancelled'
                         self._halt_delivery(s,row,'IDENTITY_REVOKED');return None
@@ -204,6 +240,9 @@ class TimelineBridge:
                         row.status=result['status']
                         row.next_attempt_at=None
                         row.delivery_error=None
+                        if pending[1]['command_kind'] in ('authorization_preview','authorization_approve'):
+                            from personal_agent.api.dal_authorizations import project_receipt
+                            project_receipt(self,s,row,pending[1],result)
                         if result['status']=='refused' and pending[1]['command_kind']=='recovery':
                             from personal_agent.api import events
                             from personal_agent.context.session_manager import SessionManager
@@ -244,6 +283,8 @@ class TimelineBridge:
 
 
 def mount_routes(app,deps,authenticate):
+    from personal_agent.api.dal_authorizations import mount_routes as mount_authorization_routes
+    mount_authorization_routes(app,deps,authenticate)
     from fastapi import HTTPException, Request
     # Request annotations are resolved from module globals by FastAPI.
     def query(request,operation,body):
@@ -256,6 +297,18 @@ def mount_routes(app,deps,authenticate):
             if code not in ('DEVICE_INACTIVE','SCOPE_REQUIRED','DEVICE_IDENTITY_MISMATCH'):
                 raise HTTPException(503,'DAL_UNAVAILABLE') from None
             raise HTTPException(403,code) from None
+    @app.get('/v1/dal/commands/{command_id}')
+    def command_status(command_id: str, request: Request):
+        if deps.dal_timeline is None:raise HTTPException(503,'DAL_UNAVAILABLE')
+        with deps.session_factory() as session:auth=authenticate(request,session)
+        try:return deps.dal_timeline.command_status(auth,command_id)
+        except ValueError as exc:
+            code=str(exc)
+            if code=='COMMAND_NOT_FOUND':raise HTTPException(404,code) from None
+            if code in ('DEVICE_INACTIVE','SCOPE_REQUIRED','DEVICE_IDENTITY_MISMATCH'):
+                raise HTTPException(403,code) from None
+            raise HTTPException(503,'COMMAND_STATE_UNAVAILABLE') from None
+
     @app.get('/v1/dal/tasks')
     def tasks(request:Request,filter:str='ongoing',limit:int=50,cursor:str|None=None):
         if filter not in ('ongoing','all','waiting') or not 1<=limit<=50:raise HTTPException(400,'INVALID_ARGUMENT')

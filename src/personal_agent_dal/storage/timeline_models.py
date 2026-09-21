@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import CheckConstraint, ForeignKey, Integer, Text, UniqueConstraint
+from sqlalchemy import Index, text, CheckConstraint, ForeignKey, Integer, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from personal_agent_core.sqlite import UtcTimestamp
@@ -368,6 +368,8 @@ class DevelopmentRemoteEffect(Base):
 
 class DevelopmentAuthorizationRequest(Base):
     __tablename__='development_authorization_requests'
+    generation: Mapped[int]=mapped_column(Integer,nullable=False,default=0,server_default='0')
+    current_proposal_id: Mapped[str|None]=mapped_column(Text)
     workflow_id: Mapped[str]=mapped_column(ForeignKey('development_workflows.workflow_id'),primary_key=True)
     request_version: Mapped[int]=mapped_column(Integer,nullable=False)
     status: Mapped[str]=mapped_column(Text,nullable=False)
@@ -404,3 +406,43 @@ def _install_timeline_ownership_guards(metadata, connection, **kwargs):
                 f"BEFORE {operation} ON {table} WHEN EXISTS(SELECT 1 FROM "
                 f"development_workflows WHERE feature_id={reference}.feature_id) "
                 "BEGIN SELECT RAISE(ABORT, 'WORKFLOW_CONTRACT_MISMATCH'); END")
+
+
+class DevelopmentProjectTemplate(Base):
+    __tablename__='development_project_templates'
+    template_id: Mapped[str]=mapped_column(Text,primary_key=True)
+    project_id: Mapped[str]=mapped_column(Text,nullable=False)
+    revision: Mapped[int]=mapped_column(Integer,nullable=False)
+    active: Mapped[int]=mapped_column(Integer,nullable=False)
+    digest: Mapped[str]=mapped_column(Text,nullable=False)
+    sealed_template: Mapped[dict[str,Any]]=mapped_column(EncryptedEnvelope,nullable=False)
+    observed_at: Mapped[datetime]=mapped_column(UtcTimestamp,nullable=False)
+    expires_at: Mapped[datetime]=mapped_column(UtcTimestamp,nullable=False)
+    evidence_digest: Mapped[str]=mapped_column(Text,nullable=False)
+    actor: Mapped[str]=mapped_column(Text,nullable=False)
+    __table_args__=(Index('uq_active_project_template','project_id',unique=True,sqlite_where=text('active = 1')),
+        UniqueConstraint('project_id','revision',name='project_template_revision'),
+        CheckConstraint('revision >= 1 AND active IN (0,1)',name='project_template_state'),)
+
+
+class DevelopmentAuthorizationProposal(Base):
+    __tablename__='development_authorization_proposals'
+    proposal_id: Mapped[str]=mapped_column(Text,primary_key=True)
+    workflow_id: Mapped[str]=mapped_column(ForeignKey('development_workflows.workflow_id'),nullable=False)
+    template_id: Mapped[str]=mapped_column(ForeignKey('development_project_templates.template_id'),nullable=False)
+    generation: Mapped[int]=mapped_column(Integer,nullable=False)
+    status: Mapped[str]=mapped_column(Text,nullable=False)
+    binding_digest: Mapped[str]=mapped_column(Text,nullable=False)
+    sealed_proposal: Mapped[dict[str,Any]]=mapped_column(EncryptedEnvelope,nullable=False)
+    expires_at: Mapped[datetime]=mapped_column(UtcTimestamp,nullable=False)
+    __table_args__=(UniqueConstraint('workflow_id','generation',name='authorization_generation'),
+        CheckConstraint("generation >= 1 AND status IN ('pending','granted','superseded','expired')",name='authorization_proposal_state'),)
+
+
+class DevelopmentAuthorizationPolicy(Base):
+    __tablename__='development_authorization_policies'
+    grant_id: Mapped[str]=mapped_column(ForeignKey('development_project_authorizations.grant_id'),primary_key=True)
+    workflow_id: Mapped[str]=mapped_column(ForeignKey('development_workflows.workflow_id'),nullable=False,unique=True)
+    template_id: Mapped[str]=mapped_column(ForeignKey('development_project_templates.template_id'),nullable=False)
+    template_digest: Mapped[str]=mapped_column(Text,nullable=False)
+    proposal_id: Mapped[str]=mapped_column(ForeignKey('development_authorization_proposals.proposal_id'),nullable=False)

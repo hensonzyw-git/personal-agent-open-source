@@ -31,7 +31,13 @@ def load_config(path):
     body=private_json(path)
     required={'schema','identity','supervisor_root','signing_key_file','data_key_file','data_kid',
         'pins','adapter_config_file','admission_file','executor_admission_file','git_pin','sandbox_pin','projects','config_refs'}
-    if set(body)!=required or body['schema']!='dal.workflow-worker/1.0':raise SupervisorRefusal('WORKFLOW_CONFIG_INVALID')
+    if body.get('schema')=='dal.workflow-worker/1.1':required=required|{'project_policies'}
+    if set(body)!=required or body['schema'] not in ('dal.workflow-worker/1.0','dal.workflow-worker/1.1'):raise SupervisorRefusal('WORKFLOW_CONFIG_INVALID')
+    if body['schema']=='dal.workflow-worker/1.1':
+        policies=body['project_policies']
+        if not isinstance(policies,dict) or not set(policies)<=set(body['projects']):raise SupervisorRefusal('WORKFLOW_CONFIG_INVALID')
+        for value in policies.values():
+            if not isinstance(value,dict) or set(value)!={'template_digest','directory_identity_digest','base_sha','base_branch'} or not all(isinstance(v,str) for v in value.values()):raise SupervisorRefusal('WORKFLOW_CONFIG_INVALID')
     if body['identity']['boot_id']!=os_boot_id():raise SupervisorRefusal('SIGNER_IDENTITY_STALE')
     if not isinstance(body['projects'],dict) or len(body['projects'])>128:raise SupervisorRefusal('WORKFLOW_CONFIG_INVALID')
     for project in body['projects'].values():
@@ -138,9 +144,12 @@ class WorkflowWorker:
         admission_sha=validate_admission(admission,context=context,reservation=reservation,plan=plan)
         plan=replace(plan,admission=admission,admission_sha256=admission_sha,production_enabled=True)
         validate_executor(self.config,self.supervisor)
+        from personal_agent_dal.worker.project_policy import validate_project_policy
+        validate_project_policy(self.config,inputs)
         if plan.final_report_path and os.path.lexists(plan.final_report_path):
             raise SupervisorRefusal('CLI_FINAL_OUTPUT_ALREADY_EXISTS')
         def heartbeat():
+            validate_project_policy(self.config,inputs)
             status=self.transport.workflow_call('status',{'step_id':binding['step_id']})
             return (status.get('stop_required') is False and status.get('attempt_id')==attempt
                 and status.get('binding_digest')==digest(binding))

@@ -75,6 +75,27 @@ def mount_routes(app, endpoint, service):
     from personal_agent_dal.service.app import _OperatorAuth
     def ready():
         if endpoint is None:raise HTTPException(503,'DAL_TIMELINE_UNAVAILABLE')
+    from personal_agent_dal.timeline.authorization_contracts import ProjectTemplate,Time,Digest
+    from personal_agent_dal.timeline.phone_authorization import ProjectAuthorizationService
+    class TemplateRegistration(Closed):
+        template: ProjectTemplate
+        observed_at: Time
+        expires_at: Time
+        evidence_digest: Digest
+    class TemplateDisable(Closed):
+        expected_revision: Annotated[StrictInt,Field(ge=1)]
+    @app.post('/operator/development/project-templates')
+    def register_template(body:TemplateRegistration,actor=Depends(_OperatorAuth(service,'control'))):
+        ready()
+        try:return ProjectAuthorizationService(endpoint.requests).register_template(body.template,
+            actor=actor,observed_at=body.observed_at,expires_at=body.expires_at,evidence_digest=body.evidence_digest)
+        except ValueError:raise HTTPException(409,'PROJECT_TEMPLATE_REFUSED') from None
+    @app.post('/operator/development/project-templates/{project_id}/disable')
+    def disable_template(project_id:str,body:TemplateDisable,actor=Depends(_OperatorAuth(service,'control'))):
+        ready()
+        try:ProjectAuthorizationService(endpoint.requests).disable_template(project_id,expected_revision=body.expected_revision,actor=actor)
+        except ValueError:raise HTTPException(409,'PROJECT_TEMPLATE_REFUSED') from None
+        return dict(status='disabled')
     @app.post('/operator/development/role-configurations')
     def register(body:Configuration,actor=Depends(_OperatorAuth(service,'control'))):
         ready()
@@ -104,7 +125,7 @@ def mount_routes(app, endpoint, service):
 def renew_authorization(requests,body,*,expected_version,actor):
     """Explicit new approval extends only time/budget, never project or actions."""
     from personal_agent_dal.storage.timeline_models import (
-        DevelopmentProjectBinding as Binding,DevelopmentWorkflow as Workflow,
+        DevelopmentGate as Gate, DevelopmentProjectBinding as Binding,DevelopmentWorkflow as Workflow,
         DevelopmentDriverStep as Step,DevelopmentExecution as Execution,DevelopmentRemoteEffect as Effect,
     )
     value=body.model_dump(mode='json');sha=digest(value)
@@ -119,7 +140,13 @@ def renew_authorization(requests,body,*,expected_version,actor):
         if ({k:v for k,v in old.items() if k not in mutable}!={k:v for k,v in value.items() if k not in mutable}
             or old['approval_evidence_ref']==value['approval_evidence_ref'] or body.budget_seconds<old['budget_seconds']
             or body.expires_at<row.expires_at):raise ValueError('RENEWAL_SCOPE_CHANGED')
-        binding=s.scalar(select(Binding).where(Binding.grant_id==row.grant_id))
+        from personal_agent_dal.storage.timeline_models import DevelopmentAuthorizationPolicy
+        if s.get(DevelopmentAuthorizationPolicy,row.grant_id) is not None:
+            # Phone grants must retain their template CAS and decision rebinding.
+            raise ValueError('RENEWAL_SCOPE_CHANGED')
+        bindings=list(s.scalars(select(Binding).where(Binding.grant_id==row.grant_id)))
+        if len(bindings)>1:raise ValueError('RECONCILIATION_REQUIRED')
+        binding=bindings[0] if bindings else None
         if binding:
             wf=s.get(Workflow,binding.workflow_id)
             if wf.status in ('cancelled','completed'):raise ValueError('STALE_BINDING')
@@ -130,12 +157,12 @@ def renew_authorization(requests,body,*,expected_version,actor):
             for step in s.scalars(select(Step).where(Step.workflow_id==wf.workflow_id,Step.status=='prepared')):
                 step.status='retired'
                 execution=s.scalar(select(Execution).where(Execution.step_id==step.step_id))
-                if execution:execution.charged_seconds=0
+                if execution and execution.started_at is None:execution.charged_seconds=0
             binding.grant_version=row.version+1
             bound=requests._open(Binding,wf.workflow_id,'sealed_binding',binding.sealed_binding)
             bound['grant_digest']=sha
             binding.sealed_binding=requests._seal(Binding,wf.workflow_id,'sealed_binding',bound)
-            if wf.status=='blocked' and wf.blocker_reason in ('EXECUTION_BUDGET_EXHAUSTED','PROJECT_AUTHORIZATION_REQUIRED'):
+            if (gate:=s.get(Gate,wf.workflow_id)) is not None and gate.mode=='open' and wf.status=='blocked' and wf.blocker_reason in ('EXECUTION_BUDGET_EXHAUSTED','PROJECT_AUTHORIZATION_REQUIRED'):
                 wf.status='active';wf.blocker_reason=None;wf.version+=1
         row.version+=1;row.digest=sha;row.expires_at=body.expires_at
         row.sealed_grant=requests._seal(Grant,row.grant_id,'sealed_grant',value)

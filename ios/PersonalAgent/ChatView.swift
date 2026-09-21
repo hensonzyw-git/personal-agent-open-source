@@ -456,6 +456,13 @@ struct ChatView: View {
                 if let phase = update.phase, let status = update.status {
                     Text(DevelopmentState.label(phase: phase, status: status)).font(.caption).foregroundStyle(.secondary)
                 }
+                if update.authorizationRequired, let id = update.taskID, let session = model.developmentAuthorizationSession {
+                    NavigationLink { DevelopmentAuthorizationView(session: session, requestID: id) } label: {
+                        Label("核对项目授权", systemImage: "checkmark.shield")
+                            .padding().frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
+                    }
+                }
                 if let id = update.artifactID {
                     NavigationLink("打开文档") {
                         DevelopmentDocumentView(artifactID: id, load: model.loadDevelopmentDocument, reply: {

@@ -80,6 +80,7 @@ class ExecutionAuthority:
         inputs=self.r._open(__import__('personal_agent_dal.storage.timeline_models',fromlist=['DevelopmentDriverStep']).DevelopmentDriverStep,
             step.step_id,'sealed_input',step.sealed_input)
         authorization=inputs.get('authorization')
+        if inputs.get('project_policy') and inputs['project_policy']['worker_id']!=worker_id:raise ValueError('WORKER_NOT_AUTHORIZED')
         grant_id=inputs.get('project',{}).get('grant_id')
         if grant_id:
             if authorization is None:raise ValueError('PROJECT_AUTHORIZATION_REQUIRED')

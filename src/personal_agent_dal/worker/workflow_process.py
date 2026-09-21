@@ -14,7 +14,7 @@ def validate_executor(config,supervisor):
     evidence=private_json(config['executor_admission_file'])
     expected=dict(schema='dal.workflow-executor-admission/1.0',provenance='operator-attested-external-native-executor',
         code_sha256=code_identity(),boot_id=supervisor.boot_id,supervisor_epoch=supervisor.epoch,
-        config_digest=digest({k:config[k] for k in ('git_pin','projects','sandbox_pin')}))
+        config_digest=digest({k:config[k] for k in (('git_pin','projects','sandbox_pin','project_policies') if config.get('schema')=='dal.workflow-worker/1.1' else ('git_pin','projects','sandbox_pin'))}))
     if set(evidence)!=set(expected)|{'issued_at','expires_at','revoked','observations'} or any(evidence.get(k)!=v for k,v in expected.items()):
         raise SupervisorRefusal('WORKFLOW_EXECUTOR_ADMISSION_REQUIRED')
     if (evidence['revoked'] is not False or type(evidence['issued_at']) is not int or type(evidence['expires_at']) is not int

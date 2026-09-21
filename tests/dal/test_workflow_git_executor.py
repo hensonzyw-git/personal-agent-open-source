@@ -153,3 +153,31 @@ def test_reservation_boot_renewal_requires_stopped_inventory_and_preserves_direc
     assert renewed['identities']==executor.reservation['identities']
     assert renewed['boot_id']=='new-test-boot'
     assert renewed['generation']==executor.reservation['generation']
+
+
+def test_phone_local_project_has_frozen_bootstrap_and_attested_policy(repository):
+    from datetime import datetime,timezone
+    from personal_agent_dal.timeline.authorization_contracts import ProjectTemplate,LOCAL_BOOTSTRAP_SHA
+    from personal_agent_dal.worker.project_policy import directory_identity
+    from personal_agent_dal.worker.project_registration import attest
+    executor,inputs,_=repository;config=executor.config
+    config.update(schema='dal.workflow-worker/1.1',identity=dict(worker_id='worker',boot_id=executor.supervisor.boot_id,supervisor_epoch=1))
+    template=ProjectTemplate(project_id='project',revision=1,display_name='Synthetic new project',kind='local_new',
+        root=str(executor.supervisor.root),remote_repository=None,allowed_actions=['read','write','create','local_init'],
+        registration_policies=['local_tracker'],max_budget_seconds=600,max_validity_seconds=3600,
+        allow_subjects=['device:synthetic'],worker_id='worker',
+        worker_configuration_digest=digest({k:config[k] for k in ('git_pin','projects','sandbox_pin')}),
+        directory_identity_digest=directory_identity(str(executor.supervisor.root)),base_sha=LOCAL_BOOTSTRAP_SHA,
+        base_branch='main',budget_policy_ref='budget')
+    policy=dict(template_digest=digest(template.model_dump(mode='json')),directory_identity_digest=template.directory_identity_digest,
+        base_sha=template.base_sha,base_branch='main')
+    config['project_policies']={'project':dict(policy)}
+    policy.update(project_id='project',root=template.root,kind='local_new',worker_id='worker',
+        worker_configuration_digest=template.worker_configuration_digest,branch='refs/heads/codex/dal-synthetic')
+    inputs['project_policy']=policy
+    proof_path=Path(config['executor_admission_file']);proof=json.loads(proof_path.read_text())
+    proof['config_digest']=digest({k:config[k] for k in ('git_pin','projects','sandbox_pin','project_policies')})
+    proof_path.write_text(json.dumps(proof))
+    evidence=attest(config,template,now=datetime.now(timezone.utc))
+    assert evidence['template']['base_sha']==LOCAL_BOOTSTRAP_SHA
+    assert executor.prepare()['manifest']['base_sha']==LOCAL_BOOTSTRAP_SHA
