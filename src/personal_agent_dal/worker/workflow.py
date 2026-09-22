@@ -42,7 +42,9 @@ def load_config(path):
     required={'schema','identity','supervisor_root','signing_key_file','data_key_file','data_kid',
         'pins','adapter_config_file','admission_file','executor_admission_file','git_pin','sandbox_pin','projects','config_refs'}
     if body.get('schema')=='dal.workflow-worker/1.1':required=required|{'project_policies'}
-    if set(body)!=required or body['schema'] not in ('dal.workflow-worker/1.0','dal.workflow-worker/1.1'):raise SupervisorRefusal('WORKFLOW_CONFIG_INVALID')
+    if set(body)-{'provider_budget_file'}!=required or body['schema'] not in ('dal.workflow-worker/1.0','dal.workflow-worker/1.1'):raise SupervisorRefusal('WORKFLOW_CONFIG_INVALID')
+    if 'provider_budget_file' in body and (not isinstance(body['provider_budget_file'],str) or not Path(body['provider_budget_file']).is_absolute()):
+        raise SupervisorRefusal('WORKFLOW_CONFIG_INVALID')
     if body['schema']=='dal.workflow-worker/1.1':
         policies=body['project_policies']
         if not isinstance(policies,dict) or not set(policies)<=set(body['projects']):raise SupervisorRefusal('WORKFLOW_CONFIG_INVALID')
@@ -58,14 +60,15 @@ def load_config(path):
         for command in project['verification_commands']:
             if (set(command)!={'pin','arguments','timeout_seconds'} or not isinstance(command['arguments'],list)
                 or any(not isinstance(a,str) or '\0' in a for a in command['arguments'])
-                or type(command['timeout_seconds']) is not int or not 1<=command['timeout_seconds']<=300):
+                or type(command['timeout_seconds']) is not int or not 1<=command['timeout_seconds']<=3600):
                 raise SupervisorRefusal('WORKFLOW_CONFIG_INVALID')
     return body
 
 
 class WorkflowWorker:
-    def __init__(self,transport,config):
+    def __init__(self,transport,config,*,stop_event=None):
         self.transport,self.config=transport,config
+        self.stop_event=stop_event
         identity=config['identity']
         self.supervisor=Supervisor(config['supervisor_root'],boot_id=identity['boot_id'],epoch=identity['supervisor_epoch'])
         key=_read_bridge_file(config['data_key_file'],kind='WORKFLOW_DATA_KEY',limit=32)
@@ -119,6 +122,9 @@ class WorkflowWorker:
                         return {'status':'stopped','attempt_id':binding['execution_id']}
                     raise SupervisorRefusal('EXECUTION_RECONCILIATION_REQUIRED')
                 if row['state']=='prepared':return self._execute(row)
+        if self.config.get('provider_budget_file'):
+            from personal_agent_dal.worker.provider_budget import available
+            if not available(self.config['provider_budget_file']):return {'status':'provider_budget_exhausted'}
         claim=self.transport.workflow_call('claim',{})
         binding=claim.get('binding')
         if binding is None:return {'status':'idle'}
@@ -159,6 +165,10 @@ class WorkflowWorker:
         if plan.final_report_path and os.path.lexists(plan.final_report_path):
             raise SupervisorRefusal('CLI_FINAL_OUTPUT_ALREADY_EXISTS')
         def heartbeat():
+            if self.stop_event is not None and self.stop_event.is_set():return False
+            if self.config.get('provider_budget_file'):
+                from personal_agent_dal.worker.provider_budget import available
+                if not available(self.config['provider_budget_file']):return False
             validate_project_policy(self.config,inputs)
             status=self.transport.workflow_call('status',{'step_id':binding['step_id']})
             return (status.get('stop_required') is False and status.get('attempt_id')==attempt
@@ -171,7 +181,8 @@ class WorkflowWorker:
                 raise SupervisorRefusal('PRELAUNCH_BINDING_INVALID')
             self.inventory.transition(attempt,'dispatch_requested','granted')
             phase=inputs['phase']
-            deterministic=phase in ('project_registration','workspace_prepare','verify','stage_commit','delivery_publication','delivery_prepare','delivery_probe')
+            single_project=phase=='project_routing' and len(inputs.get('project_catalog',[]))==1
+            deterministic=single_project or phase in ('project_registration','workspace_prepare','verify','stage_commit','delivery_publication','delivery_prepare','delivery_probe')
             if deterministic:
                 self.inventory.transition(attempt,'granted','starting')
                 self.inventory.transition(attempt,'starting','running')
@@ -185,7 +196,8 @@ class WorkflowWorker:
                         time.sleep(1)
                 executor.publish=publish
                 if not heartbeat():raise SupervisorRefusal('AUTHORITY_LOST')
-                if phase=='project_registration':result=executor.registration()
+                if single_project:result=dict(kind='project_route',text='使用已授权的唯一项目。',candidates=inputs['project_catalog'])
+                elif phase=='project_registration':result=executor.registration()
                 elif phase=='workspace_prepare':result=executor.prepare()
                 elif phase=='verify':result=executor.verify(heartbeat=heartbeat)
                 elif phase in ('delivery_publication','delivery_prepare'):result=executor.delivery()

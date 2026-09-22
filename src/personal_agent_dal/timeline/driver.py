@@ -477,7 +477,10 @@ class WorkflowDriver:
                     self._event(s,wf,'workflow.clarification',result_body['text'],questions=result_body['questions'])
             else:
                 id=ArtifactService(self.r).record(step_id=step_id,expected_result_digest=sha,_session=s);s.flush()
-                if step.phase=='project_routing':DecisionService(self.r).propose(wf.workflow_id,id,kind='project_selection',candidates=result_body['candidates'],_session=s)
+                if step.phase=='project_routing':
+                    from personal_agent_dal.timeline.projects import bind_phone_choice
+                    if not bind_phone_choice(self.r,s,wf,id,result_body['candidates']):
+                        DecisionService(self.r).propose(wf.workflow_id,id,kind='project_selection',candidates=result_body['candidates'],_session=s)
                 elif step.phase=='prd_authoring':DecisionService(self.r).propose(wf.workflow_id,id,kind='prd',_session=s)
                 elif step.phase=='delivery_revision_planning':
                     from personal_agent_dal.timeline.revisions import accept_plan

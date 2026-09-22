@@ -99,6 +99,7 @@ def build_plan(context, reservation, pins, adapter_config=None):
             argv = (*argv[:-1], json.dumps(settings), '--bare', '--setting-sources', '')
     else: raise SupervisorRefusal('ROLE_RUNTIME_UNSUPPORTED')
     return LaunchPlan(argv,cwd,env,role.runtime,pin.executable_sha256,pin.version,
+        wall_seconds=86400 if context['snapshot'].get('contract_version')=='dal.role-contract/3.0' else 600,
         auth_route=route['mode'],auth_home=route['home'],read_roots=reads,write_roots=writes,
         route_reference=deepcopy(route.get('reference')),final_report_path=final_path,
         task_directories={name:str(scratch/name) for name in ('scratch','reports','test-copy','cache')})

@@ -37,8 +37,8 @@ class ProjectTemplate(Closed):
     remote_repository: str|None
     allowed_actions: Actions
     registration_policies: Annotated[list[Literal['local_tracker','github_issue']],Field(min_length=1,max_length=2)]
-    max_budget_seconds: Annotated[StrictInt,Field(ge=1,le=86400)]
-    max_validity_seconds: Annotated[StrictInt,Field(ge=1,le=31536000)]
+    max_budget_seconds: Annotated[StrictInt,Field(ge=1,le=86400)] | None
+    max_validity_seconds: Annotated[StrictInt,Field(ge=1,le=31536000)] | None
     allow_subjects: Annotated[list[Id],Field(min_length=1,max_length=128)]
     worker_id: Id
     worker_configuration_digest: Digest
@@ -85,8 +85,8 @@ class Preview(Closed):
     template_revision: Positive
     template_digest: Digest
     requested_actions: Actions
-    budget_seconds: Annotated[StrictInt,Field(ge=1,le=86400)]
-    grant_expires_at: Time
+    budget_seconds: Annotated[StrictInt,Field(ge=1,le=86400)] | None
+    grant_expires_at: Time | None
     expected: Expected
     expected_grant: ExpectedGrant|None
 
@@ -175,8 +175,8 @@ class FrozenScope(Closed):
     kind: Literal['existing','local_new']
     display_name: str
     actions: Actions
-    budget_seconds: Annotated[StrictInt,Field(ge=1,le=86400)]
-    expires_at: Time
+    budget_seconds: Annotated[StrictInt,Field(ge=1,le=86400)] | None
+    expires_at: Time | None
     registration_policy: Literal['local_tracker','github_issue']
     remote_repository: str|None
     base_sha: Annotated[str,Field(pattern=r'^[0-9a-f]{40}$')]

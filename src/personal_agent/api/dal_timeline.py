@@ -198,7 +198,7 @@ class TimelineBridge:
                         scope='dal.project.authorize'
                         if not self.project_authorization_enabled:return None
                         from personal_agent_dal.timeline.authorization_contracts import aware_time
-                        expiry=body['payload'].get('confirmation_expires_at') or body['payload'].get('grant_expires_at')
+                        expiry=body['payload'].get('confirmation_expires_at') or body['payload'].get('grant_expires_at') or (row.created_at+__import__('datetime').timedelta(hours=24)).isoformat()
                         if row.attempts>0 and expiry is not None and aware_time(expiry)<=self.now():
                             self._halt_delivery(s,row,'RETRY_EXHAUSTED');return None
                     elif body['command_kind']=='decision':

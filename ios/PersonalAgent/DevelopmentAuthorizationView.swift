@@ -10,7 +10,9 @@ struct DevelopmentAuthorizationView: View {
     @State private var projects: [DevelopmentAuthorizationProject] = []
     @State private var selected = ""
     @State private var actions: Set<String> = ["read"]
-    @State private var seconds = 600
+    @State private var seconds = 3600
+    @State private var unlimitedTime = true
+    @State private var untilRevoked = true
     @State private var expiry = Date().addingTimeInterval(3600)
     @State private var edited = true
     @State private var busy = false
@@ -43,8 +45,10 @@ struct DevelopmentAuthorizationView: View {
                                 edited = true
                             })).disabled(action == "read" || ["create","local_init"].contains(action) || previouslyGrantedActions.contains(action) || busy || pending)
                         }
-                        Stepper("执行时长总上限：\(seconds) 秒", value: $seconds, in: 1...project.maxSeconds, step: 60).disabled(busy || pending)
-                        DatePicker("有效至", selection: $expiry, in: Date()...Date().addingTimeInterval(Double(project.maxValidity))).disabled(busy || pending)
+                        if project.maxSeconds == nil { Toggle("不限制累计执行时长", isOn: $unlimitedTime).disabled(busy || pending) }
+                        if !unlimitedTime || project.maxSeconds != nil { Stepper("执行时长总上限：\(seconds) 秒", value: $seconds, in: 1...(project.maxSeconds ?? 86400), step: 60).disabled(busy || pending) }
+                        if project.maxValidity == nil { Toggle("有效至撤销", isOn: $untilRevoked).disabled(busy || pending) }
+                        if !untilRevoked || project.maxValidity != nil { DatePicker("有效至", selection: $expiry, in: Date()...Date().addingTimeInterval(Double(project.maxValidity ?? 31536000))).disabled(busy || pending) }
                         Text("费用 / reviewer：沿用现有额度，剩余待核实").font(.footnote)
                         Text("禁止合并 main、直接修改部署中的代码、自动生产部署。").font(.footnote)
                     }
@@ -53,7 +57,7 @@ struct DevelopmentAuthorizationView: View {
             if let proposal = snapshot?.proposal {
                 Section(proposal.status == "granted" ? "已记录的授权范围" : "冻结范围 · 请核对") {
                     ForEach(["display_name","root","remote_repository","branch","base_branch","base_sha","registration_policy","budget_seconds","expires_at"], id: \.self) { key in
-                        LabeledContent(label(key), value: text(proposal.scope[key])).font(.footnote).textSelection(.enabled)
+                        LabeledContent(label(key), value: proposal.scope[key] == .null && key == "budget_seconds" ? "不限制累计执行时长" : proposal.scope[key] == .null && key == "expires_at" ? "有效至撤销" : text(proposal.scope[key])).font(.footnote).textSelection(.enabled)
                     }
                     Text("允许动作：" + text(proposal.scope["actions"])).font(.footnote)
                     if proposal.status != "pending" { Text(proposal.status == "granted" ? "授权已记录，任务是否继续仍以最新状态为准。" : "此版本已失效，请重新核对。").foregroundStyle(.secondary) }
@@ -81,10 +85,12 @@ struct DevelopmentAuthorizationView: View {
             edited = true
             if snapshot?.grants.isEmpty == true, let project {
                 actions = Set(project.actions.filter { ["read","write","create","local_init"].contains($0) })
-                seconds = min(seconds, project.maxSeconds)
-                expiry = min(expiry, Date().addingTimeInterval(Double(project.maxValidity)))
+                seconds = min(seconds, project.maxSeconds ?? 86400)
+                expiry = min(expiry, Date().addingTimeInterval(Double(project.maxValidity ?? 31536000)))
             }
         }
+        .onChange(of: unlimitedTime) { _, _ in edited = true }
+        .onChange(of: untilRevoked) { _, _ in edited = true }
         .onChange(of: seconds) { _, _ in edited = true }
         .onChange(of: expiry) { _, _ in edited = true }
     }
@@ -117,7 +123,7 @@ struct DevelopmentAuthorizationView: View {
                 }
                 if case .number(let used) = previous?["budget_seconds"] { seconds = Int(used) }
                 if let p = project {
-                    let proposed = Date().addingTimeInterval(Double(min(3600, p.maxValidity)))
+                    let proposed = Date().addingTimeInterval(Double(min(3600, p.maxValidity ?? 31536000)))
                     let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
                     let oldExpiry = previous?["expires_at"]?.stringValue.flatMap { value -> Date? in
                         if let date = formatter.date(from: value) { return date }
@@ -125,10 +131,10 @@ struct DevelopmentAuthorizationView: View {
                         return formatter.date(from: value)
                     }
                     expiry = max(oldExpiry ?? proposed, proposed)
-                    if seconds > p.maxSeconds || !actions.isSubset(of: Set(p.actions)) || expiry > Date().addingTimeInterval(Double(p.maxValidity)) {
+                    if seconds > (p.maxSeconds ?? 86400) || !actions.isSubset(of: Set(p.actions)) || expiry > Date().addingTimeInterval(Double(p.maxValidity ?? 31536000)) {
                         canAuthorize = false
                         failed = "当前项目模板不容纳此前授权范围，需要先核对项目配置；不会自动缩减已有权限。"
-                    } else { seconds = min(seconds, p.maxSeconds) }
+                    } else { seconds = min(seconds, p.maxSeconds ?? 86400) }
                 }
             }
         } catch { failed = "无法核对授权信息。若项目未接入或设备权限未开通，请等待配置完成。" }
@@ -152,8 +158,8 @@ struct DevelopmentAuthorizationView: View {
             }
             let body: [String: JSONValue] = ["operation":.string(operation), "project_id":.string(project.id),
                 "template_revision":.number(Double(project.revision)), "template_digest":.string(project.digest),
-                "requested_actions":.array(actions.sorted().map(JSONValue.string)), "budget_seconds":.number(Double(seconds)),
-                "grant_expires_at":.string(formatter.string(from: expiry)), "expected":.object(snapshot.expected), "expected_grant":expectedGrant]
+                "requested_actions":.array(actions.sorted().map(JSONValue.string)), "budget_seconds":unlimitedTime && project.maxSeconds == nil ? .null : .number(Double(seconds)),
+                "grant_expires_at":untilRevoked && project.maxValidity == nil ? .null : .string(formatter.string(from: expiry)), "expected":.object(snapshot.expected), "expected_grant":expectedGrant]
             _ = try await session.submitDevelopmentAuthorization(requestID: requestID, target: requestID, kind: "authorization_preview", body: body)
             pending = true; message = "预览已提交，尚未授权。"; await poll()
         } catch { pending = (try? await session.pendingDevelopmentAuthorization()) != nil; failed = "预览尚未确认，请核对已提交操作。" }

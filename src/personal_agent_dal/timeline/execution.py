@@ -16,6 +16,7 @@ from personal_agent_dal.storage.timeline_models import (
 )
 from personal_agent_dal.timeline.requests import digest
 import json
+from personal_agent_dal.timeline.authorization_limits import active_window
 
 
 class WorkerProof(Closed):
@@ -60,7 +61,7 @@ class ExecutionAuthority:
             or admission['schema']!='dal.workflow-admission/1.0'
             or admission['worker_id']!=worker_id or admission['snapshot_digest']!=snapshot.digest
             or admission['revoked'] is not False
-            or not admission['issued_at']<=int(now.timestamp())<admission['expires_at']
+            or not active_window(admission['issued_at'],admission['expires_at'],int(now.timestamp()),allow_unbounded=True)
             or type(admission['supervisor_epoch']) is not int or admission['supervisor_epoch']<1):
             raise ValueError('RUNTIME_ADMISSION_REQUIRED')
         body=json.loads(snapshot.body)
@@ -71,7 +72,7 @@ class ExecutionAuthority:
     def reserve(self, s, step, worker_id):
         snapshot=s.get(Snapshot,step.snapshot_id)
         if snapshot is None:raise ValueError('RUNTIME_ADMISSION_REQUIRED')
-        _,admission=self.admission(worker_id,snapshot)
+        record,admission=self.admission(worker_id,snapshot)
         prior=s.scalar(select(Execution).where(Execution.step_id==step.step_id))
         if prior:
             if prior.worker_id!=worker_id:raise ValueError('EXECUTION_ALREADY_OWNED')
@@ -92,15 +93,19 @@ class ExecutionAuthority:
             from personal_agent_dal.storage.timeline_models import DevelopmentDriverStep
             executions=select(Execution).join(DevelopmentDriverStep).where(
                 DevelopmentDriverStep.workflow_id==step.workflow_id,Execution.grant_id.is_(None))
-            limit=600
+            limit=None
         spent=sum(row.charged_seconds if row.charged_seconds is not None else row.reserved_seconds
             for row in s.scalars(executions))
-        remaining=limit-spent
-        if remaining<15:raise ValueError('EXECUTION_BUDGET_EXHAUSTED')
-        budget=min(600,remaining)
-        until=min(self.r.now()+timedelta(seconds=budget),
-            __import__('datetime').datetime.fromtimestamp(admission['expires_at'],__import__('datetime').timezone.utc))
-        if authorization:
+        from personal_agent_dal.timeline.driver import PHASES
+        timeout=record.get('execution_timeouts',{}).get(PHASES[step.phase][0],3600)
+        if type(timeout) is not int or not 60<=timeout<=86400:raise ValueError('EXECUTION_TIMEOUT_INVALID')
+        remaining=None if limit is None else limit-spent
+        if remaining is not None and remaining<15:raise ValueError('EXECUTION_BUDGET_EXHAUSTED')
+        budget=timeout if remaining is None else min(timeout,remaining)
+        until=self.r.now()+timedelta(seconds=budget)
+        if admission['expires_at'] is not None:
+            until=min(until,__import__('datetime').datetime.fromtimestamp(admission['expires_at'],__import__('datetime').timezone.utc))
+        if authorization and authorization['expires_at'] is not None:
             from datetime import datetime
             until=min(until,datetime.fromisoformat(authorization['expires_at']))
         binding=dict(schema='dal.workflow-execution/1.0',owner={'kind':'workflow','workflow_id':step.workflow_id},

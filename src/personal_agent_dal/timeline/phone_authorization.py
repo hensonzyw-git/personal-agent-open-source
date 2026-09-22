@@ -1,3 +1,4 @@
+from personal_agent_dal.timeline.authorization_limits import expiry_projection, within_limit, extends_limit, valid_expiry
 """Operator templates and atomic phone decisions. No network or model calls."""
 from datetime import timedelta
 from sqlalchemy import select
@@ -29,11 +30,13 @@ class ProjectAuthorizationService:
     def register_template(self,template,*,actor,observed_at,expires_at,evidence_digest):
         template=ProjectTemplate.model_validate(template)
         valid_id(actor)
-        observed_at,expires_at=aware_time(observed_at),aware_time(expires_at)
+        unbounded=expires_at is None
+        observed_at,expires_at=aware_time(observed_at),expiry_projection(expires_at)
+        if not unbounded:expires_at=aware_time(expires_at)
         from personal_agent_dal.machine.workflow_selection import Digest
         from pydantic import TypeAdapter
         TypeAdapter(Digest).validate_python(evidence_digest)
-        if not observed_at<=self.r.now()<expires_at<=observed_at+timedelta(hours=24):raise ValueError('INVALID_ARGUMENT')
+        if not observed_at<=self.r.now()<expires_at or (not unbounded and expires_at>observed_at+timedelta(hours=24)):raise ValueError('INVALID_ARGUMENT')
         value=template.model_dump(mode='json');sha=digest(value)
         def work(s):
             existing=s.scalar(select(Template).where(Template.project_id==template.project_id,Template.revision==template.revision))
@@ -132,7 +135,7 @@ class ProjectAuthorizationService:
                     visible={candidate['project_id'] for candidate in candidates}
                     if row.project_id not in visible and value.get('subject')!=subject:continue
                 grants.append(dict(grant_id=row.grant_id,version=row.version,digest=row.digest,
-                    expires_at=row.expires_at.isoformat(),revoked=bool(row.revoked),source='phone' if policy else 'operator',scope={k:value[k] for k in ('project_id','actions','budget_seconds','expires_at')}))
+                    expires_at=value['expires_at'],revoked=bool(row.revoked),source='phone' if policy else 'operator',scope={k:value[k] for k in ('project_id','actions','budget_seconds','expires_at')}))
             return dict(schema_version='dal.project-authorization/1.0',request_id=request_id,workflow_id=wf.workflow_id,
                 expected=expected,current_proposal=proposal,grants=grants,candidates=candidates[offset:offset+limit],
                 next_cursor=next_cursor,complete=next_cursor is None,total=len(candidates),snapshot=snapshot,
@@ -163,7 +166,7 @@ class ProjectAuthorizationService:
         if wf.status in ('cancelled','completed') or gate.mode in ('cancelled','delivered'):raise ValueError('STALE_BINDING')
         if operation=='create':
             if wf.phase!='project_routing' or wf.status!='blocked' or wf.blocker_reason!='PROJECT_AUTHORIZATION_REQUIRED' or gate.mode!='open':raise ValueError('STALE_BINDING')
-        elif not (gate.mode=='paused' or wf.status=='paused' or wf.status=='blocked' and wf.blocker_reason in ('PROJECT_AUTHORIZATION_REQUIRED','EXECUTION_BUDGET_EXHAUSTED')):
+        elif not (gate.mode=='open' and wf.status=='active' or gate.mode=='paused' or wf.status=='paused' or wf.status=='blocked' and wf.blocker_reason in ('PROJECT_AUTHORIZATION_REQUIRED','EXECUTION_BUDGET_EXHAUSTED')):
             raise ValueError('RECONCILIATION_REQUIRED')
         if s.scalar(select(Step.step_id).where(Step.workflow_id==wf.workflow_id,Step.status.in_(('dispatch_started','result_unknown'))).limit(1)):
             raise ValueError('RECONCILIATION_REQUIRED')
@@ -189,7 +192,7 @@ class ProjectAuthorizationService:
             if row.digest!=body.template_digest:raise ValueError('STALE_BINDING')
             if not set(body.requested_actions)<=set(template.allowed_actions):raise ValueError('INVALID_ARGUMENT')
             if template.kind=='local_new' and not {'create','local_init'}<=set(body.requested_actions):raise ValueError('INVALID_ARGUMENT')
-            if body.budget_seconds>template.max_budget_seconds or not self.r.now()<body.grant_expires_at<=self.r.now()+timedelta(seconds=template.max_validity_seconds):
+            if not within_limit(body.budget_seconds,template.max_budget_seconds) or not valid_expiry(body.grant_expires_at,template.max_validity_seconds,self.r.now()):
                 raise ValueError('BUDGET_LIMIT_EXCEEDED')
             policy='github_issue' if 'remote_issue' in body.requested_actions else 'local_tracker'
             if policy not in template.registration_policies:raise ValueError('INVALID_ARGUMENT')
@@ -205,17 +208,17 @@ class ProjectAuthorizationService:
                 if any(old[k]!=v for k,v in dict(project_id=template.project_id,root=template.root,kind=template.kind,
                     remote_repository=template.remote_repository,registration_policy=policy).items()):raise ValueError('INVALID_ARGUMENT')
                 if not set(old['actions'])<=set(body.requested_actions) or body.operation=='renew' and set(old['actions'])!=set(body.requested_actions):raise ValueError('INVALID_ARGUMENT')
-                if body.budget_seconds<old['budget_seconds'] or body.grant_expires_at<grant.expires_at:raise ValueError('BUDGET_LIMIT_EXCEEDED')
+                if not extends_limit(body.budget_seconds,old['budget_seconds']) or expiry_projection(body.grant_expires_at)<grant.expires_at:raise ValueError('BUDGET_LIMIT_EXCEEDED')
                 association=s.get(Policy,grant.grant_id)
                 if association is None:raise ValueError('RECONCILIATION_REQUIRED')
                 prior=self.r._open(Template,association.template_id,'sealed_template',s.get(Template,association.template_id).sealed_template)
                 if any(prior[k]!=getattr(template,k) for k in ('base_sha','base_branch','directory_identity_digest')):raise ValueError('INVALID_ARGUMENT')
             scope=dict(project_id=template.project_id,subject=grant_subject,root=template.root,kind=template.kind,
                 display_name=template.display_name,actions=sorted(body.requested_actions),budget_seconds=body.budget_seconds,
-                expires_at=body.grant_expires_at.isoformat(),registration_policy=policy,remote_repository=template.remote_repository,
+                expires_at=body.grant_expires_at.isoformat() if body.grant_expires_at is not None else None,registration_policy=policy,remote_repository=template.remote_repository,
                 base_sha=template.base_sha,base_branch=template.base_branch,branch='refs/heads/codex/dal-'+wf.workflow_id,
                 template_digest=row.digest,budget_policy_ref=template.budget_policy_ref)
-            generation=expected['generation']+1;ident=new_id();expires=min(self.r.now()+timedelta(hours=24),body.grant_expires_at)
+            generation=expected['generation']+1;ident=new_id();expires=min(self.r.now()+timedelta(hours=24),expiry_projection(body.grant_expires_at))
             binding=dict(schema='dal.project-authorization-binding/1.0',request_id=request.request_id,workflow_id=wf.workflow_id,
                 request_version=request.version,workflow_version=wf.version,gate_version=gate.version,gate_epoch=gate.epoch,
                 authorization_generation=generation,operation=body.operation,expected_grant=body.expected_grant.model_dump() if body.expected_grant else None,
@@ -250,7 +253,7 @@ class ProjectAuthorizationService:
             if expected!=want or pending.current_proposal_id!=row.proposal_id:raise ValueError('STALE_BINDING')
             self._quiescent(s,wf,gate,bound['operation'])
             template_row=s.get(Template,row.template_id);template=self._template(s,template_row,subject)
-            if template_row.digest!=bound['template_digest'] or scope['budget_seconds']>template.max_budget_seconds:raise ValueError('STALE_BINDING')
+            if template_row.digest!=bound['template_digest'] or not within_limit(scope['budget_seconds'],template.max_budget_seconds):raise ValueError('STALE_BINDING')
             existing=self._existing(s,request.request_id)
             if bound['operation']=='create':
                 if existing or s.get(Binding,wf.workflow_id):raise ValueError('RECONCILIATION_REQUIRED')
@@ -266,7 +269,7 @@ class ProjectAuthorizationService:
             from personal_agent_dal.timeline.operator import Authorization
             grant_value=Authorization(grant_id=grant.grant_id,request_id=request.request_id,approval_evidence_ref=command_id,
                 **{k:scope[k] for k in ('project_id','subject','root','kind','display_name','actions','budget_seconds','expires_at','registration_policy','remote_repository')}).model_dump(mode='json')
-            grant.digest=digest(grant_value);grant.expires_at=aware_time(scope['expires_at'])
+            grant.digest=digest(grant_value);grant.expires_at=expiry_projection(scope['expires_at'])
             grant.sealed_grant=self.r._seal(Grant,grant.grant_id,'sealed_grant',grant_value)
             s.flush()
             association=s.get(Policy,grant.grant_id)
@@ -354,7 +357,7 @@ def execution_policy(requests,session,grant):
         or scope['subject']!=grant.subject or grant.project_id!=template.project_id
         or any(scope[key]!=getattr(template,key) for key in ('project_id','root','kind','remote_repository'))
         or not set(scope['actions']).issubset(template.allowed_actions)
-        or scope['budget_seconds']>template.max_budget_seconds
+        or not within_limit(scope['budget_seconds'],template.max_budget_seconds)
         or scope['registration_policy'] not in template.registration_policies):
         raise ValueError('PROJECT_AUTHORIZATION_REQUIRED')
     return dict(template_digest=row.digest,project_id=template.project_id,worker_id=template.worker_id,

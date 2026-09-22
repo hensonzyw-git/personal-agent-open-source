@@ -52,7 +52,7 @@ def test_receipt_and_transition_rollback_together_on_invalid_output(world):
         assert s.get(DevelopmentDriverStep,launch['step_id']).status=='dispatch_started'
 
 
-def test_pregrant_clarification_attempts_share_one_workflow_budget(world):
+def test_pregrant_clarification_is_not_lifetime_limited(world):
     from datetime import timedelta
     from personal_agent_dal.timeline.recovery import RecoveryService
     r,driver,wf,item=configured(world)
@@ -62,5 +62,14 @@ def test_pregrant_clarification_attempts_share_one_workflow_budget(world):
     RecoveryService(r).apply(command_id='clarify-again',source_message_ref='source-again',subject='device:synthetic',
         workflow_id=wf,expected_version=version,action='clarification',text='Synthetic additional detail')
     step=driver.tick(wf)
-    with pytest.raises(ValueError,match='EXECUTION_BUDGET_EXHAUSTED'):
-        driver.dispatch(step['step_id'],admission={'test':'signed-by-helper'})
+    driver.dispatch(step['step_id'],admission={'test':'signed-by-helper'})
+    with r.sessions() as s:
+        assert s.scalar(select(DevelopmentExecution).where(DevelopmentExecution.step_id==step['step_id'])).reserved_seconds==3600
+
+
+def test_running_pregrant_step_can_finish_after_old_ten_minute_limit(world):
+    from datetime import timedelta
+    r,driver,wf,item=configured(world)
+    later=r.now()+timedelta(seconds=700);r.now=lambda:later
+    driver.accept(item['step_id'],attempt_id=item['attempt_id'],result=result())
+    with r.sessions() as s:assert s.get(DevelopmentDriverStep,item['step_id']).status=='completed'

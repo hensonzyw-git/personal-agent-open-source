@@ -218,7 +218,7 @@ def reconcile(bridge):
                 row.delivery_error=None;row.next_attempt_at=None
                 project_receipt(bridge,s,row,body,receipt)
             else:
-                expiry=body['payload'].get('confirmation_expires_at') or body['payload'].get('grant_expires_at')
+                expiry=body['payload'].get('confirmation_expires_at') or body['payload'].get('grant_expires_at') or (row.created_at+__import__('datetime').timedelta(hours=24)).isoformat()
                 if expiry is not None and aware_time(expiry)<=bridge.now():bridge._halt_delivery(s,row,'RETRY_EXHAUSTED')
         with bridge.sessions() as s:run_write_transaction(s,lambda:apply(s))
 

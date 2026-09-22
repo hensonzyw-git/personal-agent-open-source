@@ -1,9 +1,7 @@
 """Command-line entry point for the Home Mac Worker.
 
-Subcommands are deliberately one-shot: `poll-once` runs a single
-claim/execute/checkpoint/receipt cycle and exits; `healthcheck` reports whether
-the config, database and repo allowlist are reachable. launchd calls `poll-once`
-on a `StartInterval`; there is no long-lived daemon loop and no listening port.
+Legacy poll-once remains available. workflow-serve owns a serial Timeline
+scheduler with durable recovery and a local single-instance lock.
 """
 
 from __future__ import annotations
@@ -46,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("poll-once", help="claim one job, run it, record the result, exit")
     workflow = sub.add_parser("workflow-poll-once", help="execute one admitted Timeline v3 attempt")
     workflow.add_argument("--workflow-config", type=Path, required=True)
+    daemon = sub.add_parser("workflow-serve", help="run the serial Timeline workflow scheduler")
+    daemon.add_argument("--workflow-config", type=Path, required=True)
     sub.add_parser("healthcheck", help="verify config, database and repos are reachable")
     args = parser.parse_args(argv)
 
@@ -57,6 +57,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "healthcheck":
         return _healthcheck(config)
+    if args.command == "workflow-serve":
+        from personal_agent_dal.worker.workflow_daemon import serve
+        return serve(config,args.workflow_config)
     if args.command == "workflow-poll-once":
         from personal_agent_dal.worker.workflow import WorkflowWorker,load_config
         try:

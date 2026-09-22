@@ -42,7 +42,7 @@ def inspect_project(config, template):
     return template,policy
 
 
-def attest(config,template,*,now=None):
+def attest(config,template,*,now=None,until_revoked=False):
     template,policy=inspect_project(config,template)
     authority=dict(policy,project_id=template.project_id,root=template.root,kind=template.kind,
         worker_id=template.worker_id,worker_configuration_digest=template.worker_configuration_digest,
@@ -53,7 +53,7 @@ def attest(config,template,*,now=None):
     value=template.model_dump(mode='json')
     evidence=dict(template_digest=digest(value),worker_policy=policy,
         executor_evidence_digest=digest(private_json(config['executor_admission_file'])),observed_at=now.isoformat())
-    return dict(template=value,observed_at=now.isoformat(),expires_at=(now+timedelta(hours=1)).isoformat(),evidence_digest=digest(evidence))
+    return dict(template=value,observed_at=now.isoformat(),expires_at=None if until_revoked else (now+timedelta(hours=1)).isoformat(),evidence_digest=digest(evidence))
 
 
 def main():
@@ -61,6 +61,7 @@ def main():
     parser.add_argument('mode',choices=['prepare','attest'])
     parser.add_argument('--config',required=True)
     parser.add_argument('--template',required=True,help='Private operator template file; no credentials')
+    parser.add_argument('--until-revoked',action='store_true',help='explicit durable operator registration')
     args=parser.parse_args()
     try:
         config=load_config(args.config);template=private_json(args.template)
@@ -68,7 +69,7 @@ def main():
             model,policy=inspect_project(config,template)
             result=dict(schema='dal.project-registration-preflight/1.0',registration_ready=False,
                 project_id=model.project_id,worker_policy=policy)
-        else:result=attest(config,template)
+        else:result=attest(config,template,until_revoked=args.until_revoked)
     except (ValueError,OSError,KeyError,TypeError,subprocess.SubprocessError):
         parser.exit(1,'Project registration preflight refused; check protected configuration and admission.\n')
     print(json.dumps(result,sort_keys=True,ensure_ascii=False))

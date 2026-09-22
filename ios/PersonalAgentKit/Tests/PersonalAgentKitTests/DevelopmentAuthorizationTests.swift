@@ -43,4 +43,14 @@ struct DevelopmentAuthorizationTests {
             #expect(state.terminal == item["terminal"] as! Bool)
         }
     }
+    @Test func projectLimitsRequireExplicitNullOrPositiveNumbers() throws {
+        var body: [String: JSONValue] = ["project_id":.string("synthetic"),"revision":.number(1),"display_name":.string("Synthetic"),"kind":.string("existing"),"root":.string("/synthetic"),"remote_repository":.null,"allowed_actions":.array([.string("read")]),"registration_policies":.array([.string("local_tracker")]),"max_budget_seconds":.null,"max_validity_seconds":.null,"worker_id":.string("worker"),"worker_configuration_digest":.string(String(repeating:"a",count:64)),"directory_identity_digest":.string(String(repeating:"b",count:64)),"base_sha":.string(String(repeating:"c",count:40)),"base_branch":.string("main"),"budget_policy_ref":.string("personal"),"template_digest":.string(String(repeating:"d",count:64))]
+        let project = try DevelopmentAuthorizationProject(.object(body))
+        #expect(project.maxSeconds == nil && project.maxValidity == nil)
+        body["max_budget_seconds"] = .number(3600)
+        #expect(try DevelopmentAuthorizationProject(.object(body)).maxSeconds == 3600)
+        body.removeValue(forKey:"max_budget_seconds")
+        #expect(throws:(any Error).self) { try DevelopmentAuthorizationProject(.object(body)) }
+    }
+
 }

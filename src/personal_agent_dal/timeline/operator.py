@@ -1,4 +1,5 @@
 """Structured operator configuration; never reachable as an Agent tool."""
+from personal_agent_dal.timeline.authorization_limits import expiry_projection, extends_limit
 from typing import Literal
 from datetime import datetime
 from pathlib import PurePath
@@ -32,8 +33,8 @@ class Authorization(Closed):
     kind: Literal['existing','local_new']
     display_name: Annotated[str,Field(min_length=1,max_length=128)]
     actions: list[Literal['read','write','create','local_init','remote_issue','push','pr']]
-    budget_seconds: Annotated[StrictInt,Field(ge=1,le=86400)]
-    expires_at: datetime
+    budget_seconds: Annotated[StrictInt,Field(ge=1,le=86400)] | None
+    expires_at: datetime | None
     registration_policy: Literal['local_tracker','github_issue']
     remote_repository: str | None = None
 
@@ -44,8 +45,8 @@ def register_authorization(requests, body, *, actor):
         raise ValueError('REMOTE_REPOSITORY_REQUIRED')
     value=body.model_dump(mode='json');sha=digest(value)
     path=PurePath(body.root)
-    if (not actor or not path.is_absolute() or '..' in path.parts or body.expires_at.tzinfo is None
-        or body.expires_at<=requests.now() or not body.subject.startswith('device:')
+    if (not actor or not path.is_absolute() or '..' in path.parts or expiry_projection(body.expires_at).tzinfo is None
+        or expiry_projection(body.expires_at)<=requests.now() or not body.subject.startswith('device:')
         or not body.actions or len(body.actions)!=len(set(body.actions)) or 'read' not in body.actions
         or (body.kind=='local_new' and not {'create','local_init'}<=set(body.actions))):
         raise ValueError('PROJECT_AUTHORIZATION_INVALID')
@@ -56,7 +57,7 @@ def register_authorization(requests, body, *, actor):
             return dict(grant_id=row.grant_id,version=row.version,digest=row.digest)
         s.add(Grant(grant_id=body.grant_id,version=1,project_id=body.project_id,subject=body.subject,
             sealed_grant=requests._seal(Grant,body.grant_id,'sealed_grant',value),digest=sha,
-            expires_at=body.expires_at,revoked=0))
+            expires_at=expiry_projection(body.expires_at),revoked=0))
         s.flush()
         from personal_agent_dal.storage.timeline_models import DevelopmentAuthorizationRequest,DevelopmentWorkflow,DevelopmentRequest
         wf=s.scalar(select(DevelopmentWorkflow).where(DevelopmentWorkflow.request_id==body.request_id))
@@ -80,7 +81,7 @@ def mount_routes(app, endpoint, service):
     class TemplateRegistration(Closed):
         template: ProjectTemplate
         observed_at: Time
-        expires_at: Time
+        expires_at: Time | None
         evidence_digest: Digest
     class TemplateDisable(Closed):
         expected_revision: Annotated[StrictInt,Field(ge=1)]
@@ -129,7 +130,7 @@ def renew_authorization(requests,body,*,expected_version,actor):
         DevelopmentDriverStep as Step,DevelopmentExecution as Execution,DevelopmentRemoteEffect as Effect,
     )
     value=body.model_dump(mode='json');sha=digest(value)
-    if not actor or body.expires_at<=requests.now():raise ValueError('PROJECT_AUTHORIZATION_INVALID')
+    if not actor or expiry_projection(body.expires_at)<=requests.now():raise ValueError('PROJECT_AUTHORIZATION_INVALID')
     def work(s):
         row=s.get(Grant,body.grant_id)
         if row is None or row.revoked:raise ValueError('PROJECT_AUTHORIZATION_INVALID')
@@ -138,8 +139,8 @@ def renew_authorization(requests,body,*,expected_version,actor):
         old=requests._open(Grant,row.grant_id,'sealed_grant',row.sealed_grant)
         mutable={'expires_at','budget_seconds','approval_evidence_ref'}
         if ({k:v for k,v in old.items() if k not in mutable}!={k:v for k,v in value.items() if k not in mutable}
-            or old['approval_evidence_ref']==value['approval_evidence_ref'] or body.budget_seconds<old['budget_seconds']
-            or body.expires_at<row.expires_at):raise ValueError('RENEWAL_SCOPE_CHANGED')
+            or old['approval_evidence_ref']==value['approval_evidence_ref'] or not extends_limit(body.budget_seconds,old['budget_seconds'])
+            or expiry_projection(body.expires_at)<row.expires_at):raise ValueError('RENEWAL_SCOPE_CHANGED')
         from personal_agent_dal.storage.timeline_models import DevelopmentAuthorizationPolicy
         if s.get(DevelopmentAuthorizationPolicy,row.grant_id) is not None:
             # Phone grants must retain their template CAS and decision rebinding.
@@ -164,7 +165,7 @@ def renew_authorization(requests,body,*,expected_version,actor):
             binding.sealed_binding=requests._seal(Binding,wf.workflow_id,'sealed_binding',bound)
             if (gate:=s.get(Gate,wf.workflow_id)) is not None and gate.mode=='open' and wf.status=='blocked' and wf.blocker_reason in ('EXECUTION_BUDGET_EXHAUSTED','PROJECT_AUTHORIZATION_REQUIRED'):
                 wf.status='active';wf.blocker_reason=None;wf.version+=1
-        row.version+=1;row.digest=sha;row.expires_at=body.expires_at
+        row.version+=1;row.digest=sha;row.expires_at=expiry_projection(body.expires_at)
         row.sealed_grant=requests._seal(Grant,row.grant_id,'sealed_grant',value)
         append_audit_event(s,event_id=new_id(),trace_id=body.request_id,event_type='development.project.authorization_renewed',
             redacted_summary='time and total budget renewed by explicit approval',now=requests.now())

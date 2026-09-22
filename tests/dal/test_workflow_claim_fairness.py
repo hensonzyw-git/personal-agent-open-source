@@ -63,7 +63,7 @@ def test_new_lower_id_is_found_on_next_wrap(world,monkeypatch):
 
 
 @pytest.mark.parametrize('healthy_candidate',[False,True])
-def test_budget_refused_candidate_does_not_hide_later_candidate(world,monkeypatch,healthy_candidate):
+def test_old_pregrant_budget_no_longer_blocks_a_candidate(world,monkeypatch,healthy_candidate):
     from datetime import timedelta
     from personal_agent_dal.storage.timeline_models import DevelopmentExecution as Execution
     from personal_agent_dal.timeline.recovery import RecoveryService
@@ -84,21 +84,14 @@ def test_budget_refused_candidate_does_not_hide_later_candidate(world,monkeypatc
     with monkeypatch.context() as patch:
         patch.setattr('personal_agent_dal.timeline.driver.new_id',lambda:'0')
         assert driver.tick(wf)['step_id']=='0'
-    # A real, settled execution consumed the budget. No artificial duplicate
-    # in-flight step or injected reserve exception is needed for this boundary.
+    # Historical elapsed time remains accounted but no longer blocks pregrant work.
     with client:binding=claim(client)
     with r.sessions() as s:
-        blocked=s.get(Workflow,wf)
-        assert blocked.status=='blocked' and blocked.blocker_reason=='EXECUTION_BUDGET_EXHAUSTED'
-        assert s.get(Step,'0').status=='prepared'
-        assert s.scalar(select(Execution).where(Execution.step_id=='0')) is None
-        if healthy_candidate:
-            assert binding is not None
-            other=s.get(Step,binding['step_id'])
-            assert other.workflow_id!=wf and s.get(Workflow,other.workflow_id).status=='active'
-            execution=s.scalar(select(Execution).where(Execution.step_id==other.step_id))
-            assert execution.execution_id==binding['execution_id'] and execution.reserved_seconds==600
-        else:assert binding is None
+        current=s.get(Workflow,wf)
+        assert current.status=='active' and current.blocker_reason is None
+        assert binding is not None and binding['step_id']=='0'
+        execution=s.scalar(select(Execution).where(Execution.step_id=='0'))
+        assert execution.reserved_seconds==3600
 
 
 def test_normal_tick_and_resume_cannot_create_fresh_step_beside_inflight(world):

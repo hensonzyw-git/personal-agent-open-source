@@ -17,8 +17,9 @@ def validate_executor(config,supervisor):
         config_digest=digest({k:config[k] for k in (('git_pin','projects','sandbox_pin','project_policies') if config.get('schema')=='dal.workflow-worker/1.1' else ('git_pin','projects','sandbox_pin'))}))
     if set(evidence)!=set(expected)|{'issued_at','expires_at','revoked','observations'} or any(evidence.get(k)!=v for k,v in expected.items()):
         raise SupervisorRefusal('WORKFLOW_EXECUTOR_ADMISSION_REQUIRED')
-    if (evidence['revoked'] is not False or type(evidence['issued_at']) is not int or type(evidence['expires_at']) is not int
-        or not evidence['issued_at']<=int(time.time())<evidence['expires_at']
+    from personal_agent_dal.timeline.authorization_limits import active_window
+    if (evidence['revoked'] is not False
+        or not active_window(evidence['issued_at'],evidence['expires_at'],int(time.time()),allow_unbounded=True)
         or evidence['observations']!=['isolated-workspace','pinned-git','outside-write-denied','network-denied','bounded-stop','commit-readback']):
         raise SupervisorRefusal('WORKFLOW_EXECUTOR_ADMISSION_REQUIRED')
 

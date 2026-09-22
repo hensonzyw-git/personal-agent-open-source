@@ -60,18 +60,18 @@ public struct DevelopmentAuthorizationProject: Sendable, Identifiable {
     public let id: String
     public let name: String
     public let actions: [String]
-    public let maxSeconds: Int
-    public let maxValidity: Int
+    public let maxSeconds: Int?
+    public let maxValidity: Int?
     public let revision: Int
     public let digest: String
     init(_ raw: JSONValue) throws {
         value = try authObject(raw, keys: ["project_id","revision","display_name","kind","root","remote_repository","allowed_actions","registration_policies","max_budget_seconds","max_validity_seconds","worker_id","worker_configuration_digest","directory_identity_digest","base_sha","base_branch","budget_policy_ref","template_digest"])
         id = try authString(value, "project_id"); name = try authString(value, "display_name")
         revision = try authInteger(value, "revision", min: 1); digest = try authString(value, "template_digest")
-        maxSeconds = try authInteger(value, "max_budget_seconds", min: 1); maxValidity = try authInteger(value, "max_validity_seconds", min: 1)
+        maxSeconds = value["max_budget_seconds"] == .null ? nil : try authInteger(value, "max_budget_seconds", min: 1); maxValidity = value["max_validity_seconds"] == .null ? nil : try authInteger(value, "max_validity_seconds", min: 1)
         guard case .array(let list) = value["allowed_actions"] else { throw AgentClientError.malformedResponse }
         actions = try list.map { item in guard case .string(let a) = item, ["read","write","create","local_init","remote_issue","push","pr"].contains(a) else { throw AgentClientError.malformedResponse }; return a }
-        guard Set(actions).count == actions.count, actions.contains("read"), maxSeconds <= 86400, maxValidity <= 31536000, actions.contains("push") == actions.contains("pr") else { throw AgentClientError.malformedResponse }
+        guard Set(actions).count == actions.count, actions.contains("read"), (maxSeconds ?? 86400) <= 86400, (maxValidity ?? 31536000) <= 31536000, actions.contains("push") == actions.contains("pr") else { throw AgentClientError.malformedResponse }
     }
 }
 
@@ -115,8 +115,9 @@ public struct DevelopmentAuthorizationSnapshot: Decodable, Sendable {
             _ = try authString(grant, "grant_id"); _ = try authString(grant, "digest")
             _ = try authInteger(grant, "version", min: 1); _ = try authBool(grant, "revoked")
             let scope = try authObject(grant["scope"], keys: ["project_id","actions","budget_seconds","expires_at"])
-            _ = try authString(scope, "project_id"); _ = try authString(scope, "expires_at")
-            guard try authInteger(scope, "budget_seconds", min: 1) <= 86400,
+            _ = try authString(scope, "project_id"); if scope["expires_at"] != .null { _ = try authString(scope, "expires_at") }
+            let budget = scope["budget_seconds"] == .null ? nil : try authInteger(scope, "budget_seconds", min: 1)
+            guard (budget ?? 86400) <= 86400,
                   case .array(let actions) = scope["actions"], !actions.isEmpty,
                   actions.allSatisfy({ if case .string(let a) = $0 { return ["read","write","create","local_init","remote_issue","push","pr"].contains(a) }; return false }) else { throw AgentClientError.malformedResponse }
             return grant

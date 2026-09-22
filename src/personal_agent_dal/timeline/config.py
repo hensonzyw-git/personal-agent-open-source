@@ -45,7 +45,7 @@ def load_endpoint(path,*,engine,kill_switch=lambda:False):
         for worker_id,path in registry.items():
             def read_record(path=path,worker_id=worker_id):
                 record=json.loads(_read_bridge_file(path,kind='WORKFLOW_ADMISSION'))
-                if set(record)!={'admission','evidence','public_key_file','kid'}:raise ValueError('WORKFLOW_ADMISSION_INVALID')
+                if set(record)-{'execution_timeouts'}!={'admission','evidence','public_key_file','kid'}:raise ValueError('WORKFLOW_ADMISSION_INVALID')
                 from personal_agent_dal.timeline.requests import digest
                 evidence=record['evidence']
                 if (digest(evidence)!=record['admission']['evidence_digest']
@@ -58,7 +58,10 @@ def load_endpoint(path,*,engine,kill_switch=lambda:False):
                     raise ValueError('WORKFLOW_ADMISSION_INVALID')
                 key=serialization.load_pem_public_key(_read_bridge_file(record['public_key_file'],kind='WORKFLOW_WORKER_KEY',limit=16384))
                 if not isinstance(key,ec.EllipticCurvePublicKey) or not isinstance(key.curve,ec.SECP256R1):raise ValueError('WORKFLOW_TRUST_INVALID')
-                return dict(admission=record['admission'],keys={record['kid']:key})
+                timeouts=record.get('execution_timeouts',{})
+                if (not isinstance(timeouts,dict) or set(timeouts)-{'planner','coder','reviewer'}
+                    or any(type(v) is not int or not 60<=v<=86400 for v in timeouts.values())):raise ValueError('WORKFLOW_ADMISSION_INVALID')
+                return dict(admission=record['admission'],keys={record['kid']:key},execution_timeouts=timeouts)
             read_record()
             execution_registry[worker_id]=read_record
     endpoint.execution_authority=ExecutionAuthority(requests,execution_registry)

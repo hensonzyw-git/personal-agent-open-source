@@ -95,8 +95,8 @@ def validate_admission(binding, *, context, reservation, plan=None, expected_dig
         if evidence['identity'] != binding['identity'] or evidence['identity']['boot_id'] != os_boot_id(): raise ValueError()
         if evidence['identity']['worker_id'] != context['worker_id']: raise ValueError()
         now = int(time.time())
-        if any(type(evidence[k]) is not int for k in ('issued_at','expires_at')): raise ValueError()
-        if not evidence['issued_at'] <= now < evidence['expires_at'] or evidence['revoked_at'] is not None: raise ValueError()
+        from personal_agent_dal.timeline.authorization_limits import active_window
+        if not active_window(evidence['issued_at'],evidence['expires_at'],now,allow_unbounded=workflow_contract) or evidence['revoked_at'] is not None: raise ValueError()
         if workflow_contract:
             if evidence['scope']!='timeline-workflow-v3' or context['completion_mode']!='workflow_result':raise ValueError()
             if context.get('owner',{}).get('kind')!='workflow':raise ValueError()

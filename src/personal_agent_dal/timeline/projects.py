@@ -52,3 +52,25 @@ def accept_project(driver,s,wf,step,result,execution):
             external_effect_inventory_sha256=digest([]),trace_id=wf.workflow_id,created_at=now,updated_at=now))
         s.flush();wf.feature_id=feature_id;wf.phase='researching';wf.version+=1
     driver._event(s,wf,'workflow.project_prepared','项目准备结果已校验并保存。')
+
+
+def bind_phone_choice(requests,session,workflow,artifact_id,candidates):
+    """Reuse the explicit phone project choice, never invent a new approval."""
+    from personal_agent_dal.storage.timeline_models import DevelopmentAuthorizationPolicy as Policy,DevelopmentAuthorizationProposal as Proposal,DevelopmentGate as Gate,DevelopmentRequest as Request
+    if len(candidates)!=1 or session.get(Binding,workflow.workflow_id) is not None:return False
+    selected=candidates[0];grant=session.get(Grant,selected['grant_id'])
+    policy=session.get(Policy,selected['grant_id'])
+    gate=session.get(Gate,workflow.workflow_id)
+    if (grant is None or policy is None or policy.workflow_id!=workflow.workflow_id
+        or gate is None or gate.mode!='open' or workflow.status!='active'):return False
+    proposal=session.get(Proposal,policy.proposal_id)
+    if proposal is None or proposal.status!='granted':return False
+    # Full catalog rechecks scope, revocation, template and request binding.
+    if catalog(requests,session,workflow.request_id)!=candidates:return False
+    session.add(Binding(workflow_id=workflow.workflow_id,project_id=grant.project_id,grant_id=grant.grant_id,
+        grant_version=grant.version,route_artifact_id=artifact_id,candidate_digest=digest(candidates),
+        sealed_binding=requests._seal(Binding,workflow.workflow_id,'sealed_binding',dict(candidate=selected,grant_digest=grant.digest))))
+    workflow.phase='project_registration';workflow.version+=1
+    requests._append_event(session,session.get(Request,workflow.request_id),'workflow.project_bound',
+        dict(summary='继续使用你在手机授权的项目，正在准备开发工作区。',status=workflow.status,phase=workflow.phase))
+    return True
