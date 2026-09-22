@@ -46,6 +46,55 @@ public struct AgentClient: Sendable {
         return URLSession(configuration: configuration)
     }
 
+    public func developmentAuthorization(id: String, cursor: String? = nil, token: String) async throws -> DevelopmentAuthorizationSnapshot {
+        guard id.range(of: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", options: .regularExpression) != nil else { throw AgentClientError.malformedResponse }
+        return try await send(method: "GET", path: "/v1/dal/tasks/" + id + "/authorization", token: token,
+            query: cursor.map { [URLQueryItem(name: "cursor", value: $0)] } ?? [], as: DevelopmentAuthorizationSnapshot.self)
+    }
+    public func developmentAuthorizationContext(proposalID: String, digest: String, token: String) async throws -> DevelopmentAuthorizationContext {
+        guard proposalID.range(of: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", options: .regularExpression) != nil else { throw AgentClientError.malformedResponse }
+        return try await send(method: "POST", path: "/v1/dal/authorization-proposals/" + proposalID + "/context",
+            body: ["binding_digest": digest], token: token, as: DevelopmentAuthorizationContext.self)
+    }
+    public func submitDevelopmentAuthorization(_ pending: PendingDevelopmentAuthorization, token: String) async throws {
+        guard pending.target.range(of: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", options: .regularExpression) != nil else { throw AgentClientError.malformedResponse }
+        guard pending.commandID.range(of: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", options: .regularExpression) != nil else { throw AgentClientError.malformedResponse }
+        guard ["authorization_preview", "authorization_approve"].contains(pending.kind) else { throw AgentClientError.malformedResponse }
+        var body = pending.body; body["command_id"] = .string(pending.commandID)
+        let path = pending.kind == "authorization_preview" ? "/v1/dal/tasks/" + pending.target + "/authorization/previews" : "/v1/dal/authorization-proposals/" + pending.target + "/approve"
+        let _: [String: JSONValue] = try await sendEncoded(method: "POST", path: path, body: body, token: token,
+            headers: ["Idempotency-Key": pending.commandID], accepting: [202], as: [String: JSONValue].self)
+    }
+    public func developmentCommand(id: String, token: String) async throws -> DevelopmentCommandStatus {
+        guard id.range(of: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", options: .regularExpression) != nil else { throw AgentClientError.malformedResponse }
+        return try await send(method: "GET", path: "/v1/dal/commands/" + id, token: token, as: DevelopmentCommandStatus.self)
+    }
+
+    public func developmentNotification(id: String, token: String) async throws -> DevelopmentNotification {
+        guard id.range(of: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", options: .regularExpression) != nil else { throw AgentClientError.malformedResponse }
+        return try await send(method: "GET", path: "/v1/dal/notifications/" + id, token: token, as: DevelopmentNotification.self)
+    }
+
+    public func developmentRoles(workflowID: String? = nil, token: String) async throws -> DevelopmentRoles {
+        try await send(method: "GET", path: "/v1/dal/roles", token: token, query: workflowID.map { [URLQueryItem(name: "workflow_id", value: $0)] } ?? [], as: DevelopmentRoles.self)
+    }
+    public func developmentTask(id: String, token: String) async throws -> DevelopmentTaskDetail {
+        guard id.range(of: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", options: .regularExpression) != nil else { throw AgentClientError.malformedResponse }
+        return try await send(method: "GET", path: "/v1/dal/tasks/" + id, token: token, as: DevelopmentTaskDetail.self)
+    }
+
+    public func developmentTasks(filter: String = "ongoing", cursor: String? = nil, token: String) async throws -> DevelopmentTaskPage {
+        var query = [URLQueryItem(name: "filter", value: filter)]
+        if let cursor { query.append(URLQueryItem(name: "cursor", value: cursor)) }
+        return try await send(method: "GET", path: "/v1/dal/tasks", token: token, query: query, as: DevelopmentTaskPage.self)
+    }
+
+    public func developmentArtifact(id: String, offset: Int, token: String) async throws -> DevelopmentArtifactPage {
+        guard id.range(of: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", options: .regularExpression) != nil else { throw AgentClientError.malformedResponse }
+        return try await send(method: "GET", path: "/v1/dal/artifacts/" + id, token: token,
+            query: [URLQueryItem(name: "offset", value: String(offset))], as: DevelopmentArtifactPage.self)
+    }
+
     // --- unauthenticated: enrollment and tokens ------------------------------
 
     public func claimEnrollment(
@@ -149,10 +198,19 @@ public struct AgentClient: Sendable {
         text: String,
         clarificationOf: String? = nil,
         startNewSession: Bool = false,
+        dalReplyContext: DevelopmentReplyContext? = nil,
         idempotencyKey: String,
         token: String
     ) async throws -> OperationReceipt {
-        try await send(
+        if let context = dalReplyContext {
+            var body: [String: Any] = ["conversation_id": conversationID, "text": text,
+                "start_new_session": startNewSession,
+                "dal_reply_context": ["event_id": context.eventID, "token": context.token]]
+            if let clarificationOf { body["clarification_of"] = clarificationOf }
+            return try await send(method: "POST", path: "/v1/chat/messages", jsonBody: body,
+                token: token, headers: ["Idempotency-Key": idempotencyKey], accepting: [200, 202], as: OperationReceipt.self)
+        }
+        return try await send(
             method: "POST",
             path: "/v1/chat/messages",
             body: [
@@ -997,11 +1055,18 @@ public enum AgentClientError: Error, Equatable {
     }
 
     private static func errorCode(in body: Data) -> String? {
-        guard
-            let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-            let error = object["error"] as? [String: Any],
-            let code = error["code"] as? String
-        else { return nil }
-        return code
+        guard let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return nil }
+        if let error = object["error"] as? [String:Any], let code = error["code"] as? String { return code }
+        // DAL routes use FastAPI's detail envelope; only stable machine codes
+        // are actionable, never arbitrary human text or validation arrays.
+        if let code = object["detail"] as? String,
+           code.range(of: "^[A-Z][A-Z0-9_]{0,80}$", options: .regularExpression) != nil { return code }
+        return nil
+    }
+}
+
+extension AgentClient {
+    public func developmentReplyContext(eventID: String, token: String) async throws -> DevelopmentReplyContext {
+        try await send(method: "GET", path: "/v1/dal/events/\(eventID)/context", token: token, as: DevelopmentReplyContext.self)
     }
 }

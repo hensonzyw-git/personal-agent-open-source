@@ -131,14 +131,17 @@ def process(deps,auth,operation_id):
         s.commit()
         repository=RunRepository(deps.session_factory,deps.keyring)
         try:
-            host=DurableRunHost(deps=deps,auth=auth,operation_id=operation_id,payload=payload,anchor=anchor_event,
+            host=DurableRunHost(deps=deps,auth=_action_authority(auth,payload),operation_id=operation_id,payload=payload,anchor=anchor_event,
                 build_context=build,event_writer=write_event,model_factory=deps.v2_model_factory)
         except RunStateError:
             repository.recover(operation_id,now_ms=round(deps.now().timestamp()*1000))
             repository.settle_expired_or_business(operation_id,now_ms=round(deps.now().timestamp()*1000))
             s.expire_all();op=_owned_operation(s,operation_id,device_id=auth.device_id)
             return _ProcessedChat(_operation_response(deps.keyring,op,client_wire_version=auth.client_wire_version))
-        for attempt in range(2):
+        from personal_agent.runtime.dal_reply import handle_reply
+        from personal_agent.runtime.dal_recovery import handle_recovery
+        reply_handled=asyncio.run(handle_recovery(host)) or asyncio.run(handle_reply(host))
+        for attempt in range(0 if reply_handled else 2):
             try:
                 asyncio.run(AdkRuntime(host=host,specs=host.specs,max_reads=3-host.repo.snapshot(operation_id)['read_used']).run())
                 break
@@ -164,6 +167,7 @@ def resumable(deps):
     """Startup/periodic read-only discovery; acquiring the lease is the CAS."""
     from personal_agent.storage.models import Device
     from personal_agent.api.app import AuthContext
+    from personal_agent.api.request_payload import open_chat_request
     if not deps.v2_execution_enabled:return []
     now=round(deps.now().timestamp()*1000)
     r=RunRepository(deps.session_factory,deps.keyring)
@@ -182,7 +186,18 @@ def resumable(deps):
             if device is None or device.status!='active':continue
             import json
             scopes=json.loads(device.scopes) if isinstance(device.scopes,str) else device.scopes
-            result.append((run['operation_id'],AuthContext(device.device_id,tuple(scopes),device.allowed_tools_version,4)))
+            payload=open_chat_request(deps.keyring,request_id=op.request_id,envelope=op.api_request.encrypted_request_payload)
+            authority=payload.device_authority
+            if authority is not None:
+                if (authority['subject_id']!='device:'+device.device_id
+                    or authority['key_thumbprint']!=device.device_key_thumbprint):continue
+                admitted=tuple(scope for scope in authority['scopes'] if scope in scopes)
+                auth=AuthContext(device.device_id,admitted,device.allowed_tools_version,
+                    authority['client_wire_version'],authority['subject_id'],authority['key_thumbprint'])
+            else:
+                # Legacy requests never acquire newly added DAL privileges on recovery.
+                auth=AuthContext(device.device_id,tuple(x for x in scopes if not x.startswith('dal.')),device.allowed_tools_version,4)
+            result.append((run['operation_id'],auth))
         return result
 
 
@@ -213,3 +228,15 @@ def compatible_event(content, client_wire_version):
     if not isinstance(content, dict) or 'result_envelope' not in content:
         return content
     return {**content, 'result_envelope': compatible_answer(content['result_envelope'], client_wire_version)}
+
+
+def _action_authority(auth, payload):
+    """A duplicate HTTP request cannot elevate the originally sealed DAL turn."""
+    from dataclasses import replace
+    original=payload.device_authority
+    if original is None:
+        return replace(auth,scopes=tuple(x for x in auth.scopes if not x.startswith('dal.')))
+    if original['subject_id']!=auth.subject_id or original['key_thumbprint']!=auth.key_thumbprint:
+        raise unavailable('device_identity_changed')
+    return replace(auth,scopes=tuple(x for x in auth.scopes if x in original['scopes']),
+                   client_wire_version=min(auth.client_wire_version,original['client_wire_version']))

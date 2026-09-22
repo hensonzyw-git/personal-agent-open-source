@@ -76,6 +76,8 @@ class RuntimeInventory:
             obs = dict(row['observation']); obs.update(observation or {})
             # One unresolved execution blocks every other launch on this Worker.
             if target == 'starting':
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_runtime_inventory'").fetchone() and db.execute("SELECT 1 FROM workflow_runtime_inventory WHERE state IN ('starting','running','unknown') LIMIT 1").fetchone():
+                    raise SupervisorRefusal('WORKFLOW_PROCESS_OWNERSHIP_UNRESOLVED')
                 others = db.execute("SELECT state,observation FROM runtime_inventory WHERE effective_attempt<>? AND state IN ('starting','running','unknown')", (attempt,)).fetchall()
                 if any(state != 'unknown' or not json.loads(obs).get('reconciliation_stop', {}).get('process_exited') for state, obs in others):
                     raise SupervisorRefusal('UNRESOLVED_PROCESS_OWNERSHIP')

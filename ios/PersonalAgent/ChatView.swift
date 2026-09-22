@@ -246,6 +246,9 @@ struct ChatView: View {
             .refreshable { await model.refresh() }
             // iOS 26 SDK: no longer a View modifier, it is an environment value.
             .environment(\.scrollDismissesKeyboardMode, .immediately)
+            .onChange(of: model.focusedDevelopmentEventID) { _, id in
+                if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
+            }
             .onChange(of: model.events.count) {
                 if let last = model.events.last?.eventID {
                     withAnimation { proxy.scrollTo(last, anchor: .bottom) }
@@ -366,7 +369,7 @@ struct ChatView: View {
                 ForEach(event.imageMediaIDs, id: \.self) { mediaID in
                     TimelinePhoto(mediaID: mediaID, model: model)
                 }
-                Text(text)
+                Text(DevelopmentTaskAction.displayText(text))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
@@ -444,6 +447,31 @@ struct ChatView: View {
 
         case .riskReport(let snapshot):
             riskReportCard(snapshot: snapshot)
+
+        case .developmentUpdate(let update):
+            VStack(alignment: .leading, spacing: 8) {
+                Label("开发", systemImage: "hammer")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(update.text).textSelection(.enabled)
+                if let phase = update.phase, let status = update.status {
+                    Text(DevelopmentState.label(phase: phase, status: status)).font(.caption).foregroundStyle(.secondary)
+                }
+                if update.authorizationRequired, let id = update.taskID, let session = model.developmentAuthorizationSession {
+                    NavigationLink { DevelopmentAuthorizationView(session: session, requestID: id) } label: {
+                        Label("核对项目授权", systemImage: "checkmark.shield")
+                            .padding().frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
+                    }
+                }
+                if let id = update.artifactID {
+                    NavigationLink("打开文档") {
+                        DevelopmentDocumentView(artifactID: id, load: model.loadDevelopmentDocument, reply: {
+                            guard let load = model.loadDevelopmentContext else { throw AgentClientError.unauthenticated }
+                            model.developmentReplyContext = try await load(event.eventID)
+                        })
+                    }
+                }
+            }
 
         case .unrecognised(let eventType):
             // Not dropped: a history that silently omits entries is a history that
@@ -2223,6 +2251,13 @@ struct ChatView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if model.developmentReplyContext != nil {
+                HStack {
+                    Label("回复已选开发文档", systemImage: "doc.text").font(.caption)
+                    Spacer()
+                    Button("取消回复") { model.developmentReplyContext = nil }.font(.caption)
+                }
+            }
             if let answering = model.answering {
                 HStack {
                     Text("回答：\(answering.question)")

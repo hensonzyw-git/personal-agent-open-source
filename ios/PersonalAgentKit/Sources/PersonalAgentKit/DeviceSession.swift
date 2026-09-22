@@ -197,6 +197,94 @@ public actor DeviceSession {
         rejected = false
     }
 
+    private var authorizationBusy = false
+    private var authorizationStorageKey: String { "dal-authorization-v1:" + client.baseURL.absoluteString + ":" + (deviceID ?? "unenrolled") }
+    public func pendingDevelopmentAuthorization() throws -> PendingDevelopmentAuthorization? {
+        guard let data = try store.read(authorizationStorageKey) else { return nil }
+        let p = try JSONDecoder().decode(PendingDevelopmentAuthorization.self, from: data)
+        guard p.deviceID == deviceID, p.baseURL == client.baseURL.absoluteString, p.keyThumbprint == identity?.thumbprint else { throw AgentClientError.malformedResponse }
+        return p
+    }
+    public func canAuthorizeDevelopmentProject() async throws -> Bool {
+        _ = try await accessToken()
+        let scopes = Set(token?.scopes ?? [])
+        return scopes.contains("dal.read") && scopes.contains("dal.project.authorize")
+    }
+    public func developmentAuthorization(id: String, cursor: String? = nil) async throws -> DevelopmentAuthorizationSnapshot {
+        try await authorized { try await self.client.developmentAuthorization(id: id, cursor: cursor, token: $0) }
+    }
+    public func developmentAuthorizationContext(proposalID: String, digest: String) async throws -> DevelopmentAuthorizationContext {
+        try await authorized { try await self.client.developmentAuthorizationContext(proposalID: proposalID, digest: digest, token: $0) }
+    }
+    public func submitDevelopmentAuthorization(requestID: String, target: String, kind: String, body: [String: JSONValue]) async throws -> String {
+        guard !authorizationBusy, try pendingDevelopmentAuthorization() == nil, let deviceID, let thumbprint = identity?.thumbprint,
+              ["authorization_preview", "authorization_approve"].contains(kind) else { throw AgentClientError.malformedResponse }
+        authorizationBusy = true; defer { authorizationBusy = false }
+        let p = PendingDevelopmentAuthorization(commandID: UUID().uuidString, target: target, kind: kind, body: body,
+            requestID: requestID, deviceID: deviceID, baseURL: client.baseURL.absoluteString, keyThumbprint: thumbprint)
+        try store.write(authorizationStorageKey, value: JSONEncoder().encode(p))
+        do { try await authorized { try await self.client.submitDevelopmentAuthorization(p, token: $0) } }
+        catch {
+            if (error as? AgentClientError)?.errorCode == "CONFIRMATION_EXPIRED_NOT_QUEUED" { try store.delete(authorizationStorageKey) }
+            throw error
+        }
+        return p.commandID
+    }
+    public func resumeDevelopmentAuthorization() async throws -> DevelopmentCommandStatus? {
+        guard !authorizationBusy, let p = try pendingDevelopmentAuthorization() else { return nil }
+        authorizationBusy = true; defer { authorizationBusy = false }
+        let result: DevelopmentCommandStatus
+        do { result = try await authorized { try await self.client.developmentCommand(id: p.commandID, token: $0) } }
+        catch {
+            // Only a definite missing command permits retransmitting the saved request.
+            if case AgentClientError.notFound(let code) = error, code == "COMMAND_NOT_FOUND" {
+                do { try await authorized { try await self.client.submitDevelopmentAuthorization(p, token: $0) } }
+                catch {
+                    if (error as? AgentClientError)?.errorCode == "CONFIRMATION_EXPIRED_NOT_QUEUED" { try store.delete(authorizationStorageKey) }
+                    throw error
+                }
+                result = try await authorized { try await self.client.developmentCommand(id: p.commandID, token: $0) }
+            } else { throw error }
+        }
+        guard result.commandID == p.commandID else { throw AgentClientError.malformedResponse }
+        if result.status == "accepted" || result.status == "refused" {
+            guard result.receipt?["command_kind"] == .string(p.kind) else { throw AgentClientError.malformedResponse }
+            if p.kind == "authorization_approve", result.status == "accepted" {
+                guard result.receipt?["proposal_id"] == .string(p.target), result.receipt?["binding_digest"] == p.body["binding_digest"],
+                      result.receipt?["authorization_applied"] == .bool(true) else { throw AgentClientError.malformedResponse }
+            }
+        }
+        if result.terminal { try store.delete(authorizationStorageKey) }
+        return result
+    }
+
+    public func developmentNotification(id: String) async throws -> DevelopmentNotification {
+        try await authorized { try await self.client.developmentNotification(id: id, token: $0) }
+    }
+
+    public func developmentRoles(workflowID: String? = nil) async throws -> DevelopmentRoles {
+        try await authorized { try await self.client.developmentRoles(workflowID: workflowID, token: $0) }
+    }
+    public func developmentTask(id: String) async throws -> DevelopmentTaskDetail {
+        try await authorized { try await self.client.developmentTask(id: id, token: $0) }
+    }
+
+    public func developmentTasks(filter: String = "ongoing", cursor: String? = nil) async throws -> DevelopmentTaskPage {
+        try await authorized { try await self.client.developmentTasks(filter: filter, cursor: cursor, token: $0) }
+    }
+
+    public func developmentDocument(id: String) async throws -> DevelopmentDocument {
+        var document = DevelopmentDocument()
+        var offset = 0
+        while !document.complete {
+            let currentOffset = offset
+            let page = try await authorized { try await self.client.developmentArtifact(id: id, offset: currentOffset, token: $0) }
+            try document.append(page)
+            if let next = page.nextOffset { offset = next }
+        }
+        return document
+    }
+
     // --- authenticated calls -------------------------------------------------
 
     public func capabilities() async throws -> Capabilities {
@@ -665,4 +753,16 @@ public enum DeviceSessionError: Error, Equatable {
     case malformedNonce
     case storedEnrollmentMalformed
     case localPersistenceFailed(deviceID: String, serverDeviceRevoked: Bool)
+}
+
+extension DeviceSession {
+    public func developmentReplyContext(eventID: String) async throws -> DevelopmentReplyContext {
+        try await authorized { try await self.client.developmentReplyContext(eventID: eventID, token: $0) }
+    }
+    public func sendChatMessage(conversationID: String, text: String, clarificationOf: String?,
+        startNewSession: Bool, dalReplyContext: DevelopmentReplyContext?, idempotencyKey: String) async throws -> OperationReceipt {
+        try await authorized { try await self.client.sendChatMessage(conversationID: conversationID, text: text,
+            clarificationOf: clarificationOf, startNewSession: startNewSession, dalReplyContext: dalReplyContext,
+            idempotencyKey: idempotencyKey, token: $0) }
+    }
 }

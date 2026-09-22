@@ -1,0 +1,125 @@
+{
+  "provenance": "synthetic-only",
+  "canonical_body": {
+    "actions": [
+      "read"
+    ],
+    "root": "/synthetic/健康",
+    "budget": 1000
+  },
+  "canonical_sha256": "8dfdf888cb3cbd94957a803d6384c7424cf88f59835c1613f00269c6e3e959bb",
+  "command_states": [
+    {
+      "attempts": 0,
+      "terminal": false,
+      "wire": {
+        "schema_version": "dal.command-status/1.0",
+        "command_id": "command",
+        "status": "queued",
+        "receipt": null,
+        "delivery_halted": false,
+        "delivery_error": null,
+        "dispatch_attempted": false
+      }
+    },
+    {
+      "attempts": 0,
+      "terminal": false,
+      "wire": {
+        "schema_version": "dal.command-status/1.0",
+        "command_id": "command",
+        "status": "queued",
+        "receipt": null,
+        "delivery_halted": true,
+        "delivery_error": "INPUT_INTEGRITY_FAILED",
+        "dispatch_attempted": false
+      }
+    },
+    {
+      "attempts": 0,
+      "terminal": true,
+      "wire": {
+        "schema_version": "dal.command-status/1.0",
+        "command_id": "command",
+        "status": "cancelled",
+        "receipt": null,
+        "delivery_halted": true,
+        "delivery_error": "IDENTITY_REVOKED",
+        "dispatch_attempted": false
+      }
+    },
+    {
+      "attempts": 1,
+      "terminal": false,
+      "wire": {
+        "schema_version": "dal.command-status/1.0",
+        "command_id": "command",
+        "status": "delivery_unknown",
+        "receipt": null,
+        "delivery_halted": false,
+        "delivery_error": null,
+        "dispatch_attempted": true
+      }
+    },
+    {
+      "attempts": 1,
+      "terminal": false,
+      "wire": {
+        "schema_version": "dal.command-status/1.0",
+        "command_id": "command",
+        "status": "delivery_unknown",
+        "receipt": null,
+        "delivery_halted": true,
+        "delivery_error": "IDENTITY_REVOKED",
+        "dispatch_attempted": true
+      }
+    },
+    {
+      "attempts": 5,
+      "terminal": false,
+      "wire": {
+        "schema_version": "dal.command-status/1.0",
+        "command_id": "command",
+        "status": "delivery_unknown",
+        "receipt": null,
+        "delivery_halted": true,
+        "delivery_error": "RETRY_EXHAUSTED",
+        "dispatch_attempted": true
+      }
+    },
+    {
+      "attempts": 1,
+      "terminal": true,
+      "wire": {
+        "schema_version": "dal.command-status/1.0",
+        "command_id": "command",
+        "status": "accepted",
+        "receipt": {
+          "command_id": "command",
+          "status": "accepted",
+          "command_kind": "authorization_preview"
+        },
+        "delivery_halted": false,
+        "delivery_error": null,
+        "dispatch_attempted": true
+      }
+    },
+    {
+      "attempts": 1,
+      "terminal": true,
+      "wire": {
+        "schema_version": "dal.command-status/1.0",
+        "command_id": "command",
+        "status": "refused",
+        "receipt": {
+          "command_id": "command",
+          "status": "refused",
+          "command_kind": "authorization_preview"
+        },
+        "delivery_halted": false,
+        "delivery_error": null,
+        "dispatch_attempted": true
+      }
+    }
+  ]
+}

@@ -54,7 +54,17 @@ def test_nginx_denies_before_rewrite():
     for modifier, path in [('=', '/internal'), ('^~', '/internal/'),
                            ('=', '/dal/transport/v1/internal'), ('^~', '/dal/transport/v1/internal/')]:
         assert f'location {modifier} {path} {{ return 403; }}' in ssl
-    assert 'location /dal/' not in ssl  # This repair does not activate public routes.
+    # The rollout template now exposes scoped transport routes, never internal.
+    # Static configuration evidence is not evidence that it has been installed.
+    assert 'location /dal/ {' not in ssl
+    import re
+    locations = dict(re.findall(r'location (/dal/transport/v1/[^ ]*) \{([^}]+)\}', ssl))
+    assert set(locations) == {'/dal/transport/v1/', '/dal/transport/v1/jobs/', '/dal/transport/v1/workflow/'}
+    workflow = locations['/dal/transport/v1/workflow/']
+    assert 'client_max_body_size 3m;' in workflow
+    assert 'limit_req zone=pa_poll' in workflow
+    assert all('include /etc/nginx/snippets/dal-upstream.conf;' in body for body in locations.values())
+    assert 'client_max_body_size 3m;' not in locations['/dal/transport/v1/']
 
 
 @pytest.mark.parametrize('status,exit_code,accepted', [('403',0,True), ('401',0,False),

@@ -1271,6 +1271,7 @@ public enum ToolEvidence: Sendable, Equatable {
 
 /// What one Timeline entry is, as far as the UI is concerned.
 public enum TimelineEntryKind: Sendable, Equatable {
+    case developmentUpdate(DevelopmentUpdate)
     case userMessage(text: String, clarificationOf: String?)
     /// The structured receipt as it was persisted. Projected by the same code as
     /// a live receipt. `toolEvidence` records whether the persisted event
@@ -1352,6 +1353,9 @@ public struct TimelineEvent: Sendable, Equatable, Identifiable {
 
     public var kind: TimelineEntryKind {
         switch eventType {
+        case "development_update":
+            guard let update = DevelopmentUpdate(content: content) else { return .unrecognised(eventType: eventType) }
+            return .developmentUpdate(update)
         case "user_message":
             // A user message with no readable text is not silently blank: it is
             // an entry this client could not read.

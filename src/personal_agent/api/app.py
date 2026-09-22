@@ -30,7 +30,7 @@ import threading
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Final, Protocol
 
@@ -235,6 +235,7 @@ class AuthContext:
     client_wire_version: int = 1
     subject_id: str | None = None
     key_thumbprint: str | None = None
+    dal_reply_context: dict[str, str] | None = None
 
     @property
     def chat_runtime_v2(self):
@@ -315,6 +316,7 @@ class AgentApiDeps:
     #: whose input crossed the soft limit. `None` means no Compactor provider is
     #: composed, and the signal is then recorded and not acted on.
     dal_resume: Any | None = None
+    dal_timeline: Any | None = None
     v2_device_ids: frozenset[str] = frozenset()
     v2_execution_enabled: bool = True
     trip_query_enabled: bool = False
@@ -593,7 +595,7 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        async def deliveries():
+        async def deliveries(bridge):
             import sqlite3
             import threading
             from sqlalchemy.exc import OperationalError
@@ -602,24 +604,24 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 # Cancellation cannot stop a running thread. Drain it before the
                 # lifespan releases dependencies; never start another delivery.
                 stop = threading.Event()
-                flight = asyncio.create_task(asyncio.to_thread(deps.dal_resume.deliver_pending, stop_event=stop))
+                flight = asyncio.create_task(asyncio.to_thread(bridge.deliver_pending, stop_event=stop))
                 try:
                     await asyncio.shield(flight)
                 except asyncio.CancelledError:
                     stop.set()
                     await join_before_cancel(asyncio.gather(flight, return_exceptions=True))
                     raise
-                except (sqlite3.OperationalError, OperationalError, OSError):
-                    logger.warning("DAL resume delivery transient failure; retrying")
+                except (sqlite3.OperationalError, OperationalError, OSError, __import__("httpx").RequestError):
+                    logger.warning("DAL bridge delivery transient failure; retrying")
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, 30.0)
                     continue
                 except Exception:
-                    logger.error("DAL resume delivery stopped: unexpected failure")
+                    logger.error("DAL bridge delivery stopped: unexpected failure")
                     raise
                 retry_delay = 0.25
                 await asyncio.sleep(5)
-        task = recovery = None
+        task = recovery = timeline_task = None
         _app.state.dal_resume_delivery_task = None
         _app.state.adk_recovery_task = None
         stop = asyncio.Event()
@@ -630,8 +632,12 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
             needed = await join_before_cancel(
                 asyncio.create_task(asyncio.to_thread(recovery_needed, deps))
             )
-            task = asyncio.create_task(deliveries()) if deps.dal_resume else None
+            task = asyncio.create_task(deliveries(deps.dal_resume)) if deps.dal_resume else None
             _app.state.dal_resume_delivery_task = task
+            timeline_task = asyncio.create_task(deliveries(deps.dal_timeline)) if deps.dal_timeline else None
+            _app.state.dal_timeline_delivery_task = timeline_task
+            if timeline_task:
+                timeline_task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
             if task:
                 # Retrieve failures promptly with only fixed-classification logs.
                 task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
@@ -645,13 +651,16 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 stop.set()
                 if task:
                     task.cancel()
+                if timeline_task:
+                    timeline_task.cancel()
                 try:
                     if recovery is not None:
                         await recovery
                 finally:
                     try:
-                        if task:
-                            await asyncio.gather(task, return_exceptions=True)
+                        pending_deliveries = [t for t in (task, timeline_task) if t is not None]
+                        if pending_deliveries:
+                            await asyncio.gather(*pending_deliveries, return_exceptions=True)
                     finally:
                         await drain_background_tasks()
 
@@ -791,6 +800,11 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
 
     from personal_agent.api.dal_resume import mount_routes
     mount_routes(app, deps, authenticate)
+    if deps.dal_timeline is not None:
+        from personal_agent.api.dal_timeline_events import TimelineProjector
+        deps.dal_timeline.projector = TimelineProjector(deps.dal_timeline, deps.session_manager)
+    from personal_agent.api.dal_timeline import mount_routes as mount_timeline_routes
+    mount_timeline_routes(app, deps, authenticate)
 
     def idempotency_key(request: Request) -> str:
         key = request.headers.get("idempotency-key", "").strip()
@@ -937,6 +951,10 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
         # model/dispatcher run outside the event loop.
         auth = await asyncio.to_thread(_authenticate_once, request, deps, authenticate)
         body = await _json_body(request)
+        from personal_agent.api.request_payload import validate_reply_context
+        auth = replace(auth, dal_reply_context=validate_reply_context(body.get("dal_reply_context")))
+        if auth.dal_reply_context is not None and auth.client_wire_version < 6:
+            raise AppError(ErrorCode.INVALID_ARGUMENT, internal_detail="reply context requires wire 6")
         key = idempotency_key(request)
         conversation_id = _required(body, "conversation_id")
         parts, text = _chat_request(body, deps)
@@ -1268,6 +1286,9 @@ def build_app(deps: AgentApiDeps) -> FastAPI:
                 if auth.client_wire_version<4 and any(isinstance(entry.content,dict) and entry.content.get('result_envelope',{}).get('version')==2 for entry in page.entries):
                     from personal_agent.api.runtime_v2 import unavailable
                     raise unavailable('client_upgrade_required')
+                if deps.dal_timeline is not None:
+                    from personal_agent.api.dal_contexts import delivered
+                    delivered(session,deps.dal_timeline,auth,page.entries)
                 from personal_agent.api.runtime_v2 import compatible_event
                 return JSONResponse(
                     {
@@ -2130,6 +2151,7 @@ def _preflight_chat_replay(
                     parts=parts,
                     clarification_of=clarification_of,
                     start_new_session=start_new_session,
+                    dal_reply_context=auth.dal_reply_context,
                 )
             else:
                 fingerprint = chat_request_fingerprint(
@@ -2137,6 +2159,7 @@ def _preflight_chat_replay(
                     text=text,
                     clarification_of=clarification_of,
                     start_new_session=start_new_session,
+                    dal_reply_context=auth.dal_reply_context,
                 )
                 matches = request_row.request_fingerprint == fingerprint
             if not matches:
@@ -2378,6 +2401,7 @@ def _anchor_chat_in_transaction(
         text=text,
         clarification_of=clarification_of,
         start_new_session=start_new_session,
+        dal_reply_context=auth.dal_reply_context,
         parts=resolved_parts(parts, images),
     )
     opened = open_operation(
@@ -2458,6 +2482,10 @@ def _anchor_chat_in_transaction(
         clarification_context=context,
         finance_retry_context=retry_context,
         start_new_session=start_new_session,
+        dal_reply_context=auth.dal_reply_context,
+        device_authority=(dict(subject_id=auth.subject_id,key_thumbprint=auth.key_thumbprint,
+            scopes=list(auth.scopes),client_wire_version=auth.client_wire_version)
+            if auth.subject_id and auth.key_thumbprint and any(x.startswith('dal.') for x in auth.scopes) else None),
         # The *unresolved* parts: §3.2 seals the original structure, and the
         # measured digest belongs to the fingerprint and the media table, not to
         # the sealed copy of what the client sent.

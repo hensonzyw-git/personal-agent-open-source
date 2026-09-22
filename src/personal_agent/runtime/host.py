@@ -66,6 +66,27 @@ class DurableRunHost:
                 declarations.append({'function':{'name':tool.name,'description':tool.summary,'parameters':tool.model_input_schema}})
         self.trip_enabled = deps.trip_query_enabled and auth.client_wire_version >= 5
         self.specs=catalog(declarations, trip_enabled=self.trip_enabled)
+        if deps.dal_timeline is not None and 'dal.request' in scopes and 'dal.request' in auth.scopes:
+            from personal_agent.runtime.run_catalog import obj, TASK, REFS
+            from personal_agent.runtime.run_tools import RunToolSpec
+            self.specs.append(RunToolSpec('dal_submit_request','dal.submit_request','write',
+                '登记当前用户消息中的开发需求，尚不启动开发。Host 保存用户原文；不能用于审批、授权、修改旧任务或查询进度。',
+                obj({'arguments':obj({}),'task':TASK,'write_source_refs':REFS},['arguments','task'])))
+        if deps.dal_timeline is not None and 'dal.read' in scopes and 'dal.read' in auth.scopes:
+            from personal_agent.runtime.run_catalog import obj, TASK
+            from personal_agent.runtime.run_tools import RunToolSpec
+            self.specs.append(RunToolSpec('dal_query_progress','dal.query_progress','read',
+                '仅当用户要求任务列表或总体进度时查询；不能用于解释某条卡点或回答目录是什么。查询所有正在进行的开发任务。服务端完整分页，直接在 Timeline 展示每项真实阶段和状态，不由模型筛选。',
+                obj({'arguments':obj({}),'task':TASK})))
+        if (deps.dal_timeline is not None and auth.client_wire_version >= 6
+            and {'dal.read','dal.request'}.issubset(scopes) and {'dal.read','dal.request'}.issubset(auth.scopes)):
+            from personal_agent.runtime.run_catalog import obj, TASK, REFS
+            from personal_agent.runtime.run_tools import RunToolSpec
+            self.specs.append(RunToolSpec('dal_answer_clarification','dal.answer_clarification','write',
+                '补充已有开发需求或收窄本期范围；不新建需求、不批准文档。Host 查询完整任务集并绑定唯一目标，多任务则向用户澄清。保存当前用户原文，模型不得传任务ID、版本或替换正文。',
+                obj({'arguments':obj({}),'task':TASK,'write_source_refs':REFS},['arguments','task'])))
+        from personal_agent.runtime.dal_history import restrict_development_tools
+        self.specs=restrict_development_tools(self.specs,self.payload.text)
         self.evidence=EvidenceCatalog(); self.results=[]; self.candidates={}; self.format_error=None; self.pending_metadata=None; self.read_failed=False
         self.model_factory=model_factory
         self._discover(0)
@@ -109,9 +130,11 @@ class DurableRunHost:
         else:self.repo.reserve_bound(self.operation_id,now_ms=now,llm_add=1,attempt_key=attempt.nonce,lease=self.lease)
         self.envelope=self.build_context()
         declared={json.loads(c.text)['function']['name'] for c in self.envelope.components if c.kind.value=='tool_declaration'}
-        if any(s.business_name not in declared for s in self.specs if not s.business_name.startswith(('agent.','search.'))):
+        if any(s.business_name not in declared for s in self.specs if not s.business_name.startswith(('agent.','search.','dal.'))):
             raise RunStateError('catalog_permission_changed')
         history=[c.text for c in self.envelope.components if c.kind.value in {'raw_event','memory','preferences'}]
+        from personal_agent.runtime.dal_history import development_history
+        history.extend(development_history(self))
         mandatory=[c.text for c in self.envelope.components if c.kind.value in {'checkpoint','clarification_context'}]
         domains={s.business_name.split('.')[0] for s in self.specs}
         today=self.deps.now().astimezone(__import__('zoneinfo').ZoneInfo('Asia/Shanghai')).date().isoformat()
@@ -298,6 +321,50 @@ class DurableRunHost:
                 self.repo.finish(self.lease,answer,now_ms=self.now(),event_writer=self.event_writer,close_source=False)
                 return ToolResult(answer,stop=True)
             return ToolResult(self.results[-1])
+        if name == 'dal.query_progress':
+            if self.deps.dal_timeline is None:raise RunStateError('dal_unavailable')
+            if len(self.accepted_batch_ids)!=1:raise RunStateError('dal_progress_requires_exclusive_read')
+            request={'tool':name,'arguments':{}}
+            result=self.repo.cached_read(self.operation_id,request)
+            if result is None:
+                self.repo.reserve_read(self.lease,call.call_id,request,now_ms=self.now())
+                result=await asyncio.to_thread(self.deps.dal_timeline.progress,self.auth)
+                self.repo.evidence_step(self.lease,call.call_id,result,now_ms=self.now())
+            count=len(result['items'])
+            summary=('当前没有正在进行的开发任务。' if count==0 else f'当前共有 {count} 个正在进行的开发任务，进度如下。') if result['complete'] else f'已读取 {count} 项开发进度，查询尚未完成；请稍后继续查询。'
+            answer={'version':2,'kind':'conversation','task_status':'completed' if result['complete'] else 'waiting',
+                'coverage':'complete' if result['complete'] else 'partial','text':summary,'evidence':[]}
+            def writer(session,outcome):
+                from personal_agent.api import events
+                self.deps.dal_timeline._identity(session,self.auth,'dal.read')
+                sid=self.deps.session_manager.system_event_session(session,conversation_id=self.payload.conversation_id,now=self.deps.now())
+                for item in result['items']:
+                    events.append_event(session,self.deps.keyring,conversation_id=self.payload.conversation_id,session_id=sid,
+                        turn_id=self.anchor.turn_id,event_type='development_update',operation_id=None,now=self.deps.now(),
+                        content={'schema_version':'dal.timeline/1.0','task_id':item['task_id'],'kind':'progress',
+                            'text':item['summary'],'status':item['status'],'phase':item['phase'],'source_version':item['version'],
+                            'snapshot':result['snapshot'],'complete':result['complete']})
+                if self.event_writer:self.event_writer(session,outcome)
+            self.repo.finish(self.lease,answer,now_ms=self.now(),event_writer=writer,metadata=self.pending_metadata,close_source=result['complete'])
+            return ToolResult(answer,stop=True)
+        if name == 'dal.answer_clarification':
+            from personal_agent.runtime.dal_recovery import answer_clarification
+            return await answer_clarification(self,args)
+        if name == 'dal.submit_request':
+            if self.deps.dal_timeline is None:raise RunStateError('dal_unavailable')
+            # Only the present user message may create this request. Neither
+            # model-produced text nor historical sources become its authority.
+            if args.get('write_source_refs',args['task']['source_refs']) != [self.anchor.event_id]:
+                raise RunStateError('dal_current_source_required')
+            answer={'version':2,'kind':'conversation','task_status':'completed','coverage':'complete',
+                'text':'开发需求已保存，正在等待 DAL 接纳；开发尚未开始。','evidence':[]}
+            def writer(session,result):
+                self.deps.dal_timeline.queue_submit(self.auth,command_id=self.operation_id,
+                    source_message_ref=self.anchor.event_id,body=self.payload.text,_session=session)
+                if self.event_writer:self.event_writer(session,result)
+            self.repo.finish(self.lease,answer,now_ms=self.now(),event_writer=writer,
+                metadata=self.pending_metadata)
+            return ToolResult(answer,stop=True)
         if name == 'finance.query_expenses' and (args.get('arguments', {}).get('view') == 'by_trip' or args.get('arguments', {}).get('trip_tag') is not None):
             if not self.trip_enabled:
                 raise RunStateError('client_upgrade_required')

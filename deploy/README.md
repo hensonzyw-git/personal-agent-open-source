@@ -581,6 +581,13 @@ block, before the catch-all `location /`:
     location = /dal/transport/v1/internal { return 403; }
     location ^~ /dal/transport/v1/internal/ { return 403; }
 
+    # Workflow object bundles are bounded at both proxy and application layers.
+    location /dal/transport/v1/workflow/ {
+        client_max_body_size 3m;
+        limit_req zone=pa_poll burst=30 nodelay;
+        include /etc/nginx/snippets/dal-upstream.conf;
+    }
+
     # DAL Dev Workflow Service (R08): loopback 8820, snippet dal-upstream.conf.
     location /dal/transport/v1/jobs/ {
         limit_req zone=pa_poll burst=30 nodelay;
@@ -659,3 +666,50 @@ sudo systemctl daemon-reload
   have to be captured after deployment.
 - Real APNs device registration/sending and live receipt evidence — inputs are
   ready, but implementation remains outside this rollout.
+
+### Timeline v3 Worker rollout boundary (2026-09-18)
+
+The existing `poll-once` report-only job does not execute Timeline v3 workflows.
+The new entrypoint is `personal-agent-dal-worker --config <worker-config>
+workflow-poll-once --workflow-config <workflow-config>`. The separate template is
+`src/personal_agent_dal/worker/launchd/org.example.personal-agent-dal-workflow.plist`;
+it is not installed or enabled by this change. Replace its release/config paths
+only after target-machine acceptance and stop the legacy poll job before switching.
+Keep the old release and both databases backed up for coordinated rollback; do not
+blindly downgrade databases containing new execution/delivery evidence.
+
+PA command retry migration `0022_dal_command_retry` persists retry deadlines and
+halt reasons. A halted attempted command remains `delivery_unknown`; do not clear
+its retry fields or issue a replacement command to infer reconciliation. Preserve
+PA/DAL matching command receipts before rollback; downgrade refuses persisted
+retry/unknown-result evidence. The coordinated iOS release displays halted command
+notices even when a task ID is not yet known.
+
+PA and DAL must be upgraded together (PA migration `0022_dal_command_retry`,
+DAL `0022`). DAL Timeline config needs the registered role catalog plus
+`execution_registry_file`, with protected per-worker public keys and matching v3
+admission records. The Worker workflow config is the closed
+`dal.workflow-worker/1.0` schema in `worker/workflow.py`; it separately pins native
+roles, Git, the OS sandbox, source roots and verification commands. It requires
+protected signing/data keys, a current boot/epoch, native role admission and
+`dal.workflow-executor-admission/1.0`. Old `single-role-report-only` admission is
+not valid. For v3 the coder must demonstrate source editing **and denial of Git
+metadata writes**; the deterministic executor separately demonstrates commit and
+readback. Never convert offline fixture results into operator native evidence.
+
+The TLS template now routes `/dal/transport/v1/workflow/` to DAL with a 3 MiB cap;
+publication/result are bounded again in the application, while other app routes
+retain their smaller cap. Publication returns pending promptly and is polled;
+proxy timeouts must not be worked around by reissuing external writes. The signed
+`/internal/` bridge remains denied at public ingress.
+
+If an external write is unknown, the operator-only
+`POST /operator/development/remote-effects/reconcile` takes the exact `step_id`
+and persisted `payload_digest`. It performs bounded readback only and either
+adopts one matching effect or refuses. It does not restart a task, renew grants,
+clear an unproven local process, or infer absence from an incomplete search.
+
+These are release inputs and boundaries, not deployment evidence. No target
+machine, Nginx service, provider, GitHub repository or iPhone was changed by the
+local remediation. See the pinned review prompt and evidence record under
+`docs/dal/` and `docs/evidence/` before authorizing a rollout.

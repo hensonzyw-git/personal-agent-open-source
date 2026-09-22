@@ -20,6 +20,7 @@ from personal_agent_dal.worker.supervisor import SupervisorRefusal, _digest, _ab
 POLICY = 'trusted-single-user/1.0'
 SCHEMA = 'dal.runtime-admission/1.0'
 ROUTE_SCHEMA = 'dal.runtime-admission/2.0'
+WORKFLOW_SCHEMA = 'dal.runtime-admission/3.0'
 
 
 def code_identity():
@@ -54,7 +55,13 @@ def plan_contract(plan, reservation):
         body.pop(name, None)
     if body.get('route_reference') is None:
         body.pop('route_reference', None)
-    substitutions = sorted(((reservation[k], '${'+k+'}') for k in ('workspace','temp','git')), key=lambda x: -len(x[0]))
+    from personal_agent_dal.worker.role_adapter import codex_final_path
+    if body.get('final_report_path') is None:
+        body.pop('final_report_path',None)
+    elif body['final_report_path']!=codex_final_path(reservation):
+        raise SupervisorRefusal('FINAL_OUTPUT_PATH_INVALID')
+    substitutions = sorted([*((reservation[k], '${'+k+'}') for k in ('workspace','temp','git')),
+        (codex_final_path(reservation),'${codex_final_output}')],key=lambda x:-len(x[0]))
     def normalize(value):
         if isinstance(value, str):
             for path, token in substitutions: value = value.replace(path, token)
@@ -80,16 +87,20 @@ def validate_admission(binding, *, context, reservation, plan=None, expected_dig
         if set(evidence) != {'schema','code_sha256','policy','identity','roles','config_refs','issued_at','expires_at','revoked_at','scope','provenance'}: raise ValueError()
         from personal_agent_dal.worker.reviewer_route import SCHEMA as ADAPTER_SCHEMA
         route_contract = binding['adapters'].get('schema') == ADAPTER_SCHEMA
-        if evidence['schema'] != (ROUTE_SCHEMA if route_contract else SCHEMA) or evidence['policy'] != POLICY or evidence['code_sha256'] != code_identity(): raise ValueError()
+        workflow_contract=context['snapshot'].get('contract_version')=='dal.role-contract/3.0'
+        if evidence['schema'] != (WORKFLOW_SCHEMA if workflow_contract else ROUTE_SCHEMA if route_contract else SCHEMA) or evidence['policy'] != POLICY or evidence['code_sha256'] != code_identity(): raise ValueError()
         if route_contract:
             ref = binding['adapters']['roles']['reviewer']['config_ref']
             if binding['config_refs'].get(ref['path']) != ref['sha256']: raise ValueError()
         if evidence['identity'] != binding['identity'] or evidence['identity']['boot_id'] != os_boot_id(): raise ValueError()
         if evidence['identity']['worker_id'] != context['worker_id']: raise ValueError()
         now = int(time.time())
-        if any(type(evidence[k]) is not int for k in ('issued_at','expires_at')): raise ValueError()
-        if not evidence['issued_at'] <= now < evidence['expires_at'] or evidence['revoked_at'] is not None: raise ValueError()
-        if evidence['scope'] != 'single-role-report-only' or context['completion_mode'] != 'report_only': raise ValueError()
+        from personal_agent_dal.timeline.authorization_limits import active_window
+        if not active_window(evidence['issued_at'],evidence['expires_at'],now,allow_unbounded=workflow_contract) or evidence['revoked_at'] is not None: raise ValueError()
+        if workflow_contract:
+            if evidence['scope']!='timeline-workflow-v3' or context['completion_mode']!='workflow_result':raise ValueError()
+            if context.get('owner',{}).get('kind')!='workflow':raise ValueError()
+        elif evidence['scope'] != 'single-role-report-only' or context['completion_mode'] != 'report_only': raise ValueError()
         if evidence['provenance'] != 'operator-attested-external-native-cli': raise ValueError()
         if evidence['config_refs'] != binding['config_refs'] or not binding['config_refs']: raise ValueError()
         for raw, sha in binding['config_refs'].items():
@@ -111,6 +122,9 @@ def validate_admission(binding, *, context, reservation, plan=None, expected_dig
             if any(not Path(p).is_absolute() or '${' in p for p in smoke['task_paths'].values()): raise ValueError()
             command=list(smoke['command'])
             for i,arg in enumerate(command):
+                if current.final_report_path:
+                    from personal_agent_dal.worker.role_adapter import codex_final_path
+                    arg=arg.replace(codex_final_path(smoke['task_paths']),'${codex_final_output}')
                 for key,path in sorted(smoke['task_paths'].items(),key=lambda x:-len(x[1])):
                     arg=arg.replace(path,'${'+key+'}')
                 command[i]=arg
@@ -121,6 +135,8 @@ def validate_admission(binding, *, context, reservation, plan=None, expected_dig
             if type(result['exit_code']) is not int or result['exit_code'] != 0 or result['cli_version'] != current.version: raise ValueError()
             if any(not isinstance(result[k],str) or not re.fullmatch('[0-9a-f]{64}',result[k]) for k in ('stdout_sha256','stderr_sha256')): raise ValueError()
             required = ['report-produced','scratch-write','business-write-denied','outside-write-denied'] if name != 'coder' else ['report-produced','scratch-write','source-edit','git-add','git-commit','outside-write-denied']
+            if workflow_contract and name == 'coder':
+                required = ['report-produced','scratch-write','source-edit','git-metadata-write-denied','outside-write-denied']
             if route_contract and name == 'reviewer':
                 # Owner attests the live mapping from the native probe; the
                 # public file digest alone cannot establish a running gateway.
@@ -144,7 +160,7 @@ def revalidate_plan(plan, inventory, attempt):
     if not isinstance(digest, str) or re.fullmatch('[0-9a-f]{64}', digest) is None:
         raise SupervisorRefusal('RUNTIME_ADMISSION_INVALID')
     row = inventory.get(attempt)
-    reservation = inventory.supervisor.validate(row['reservation_id'])
+    reservation = inventory.execution_reservation(attempt) if hasattr(inventory,'execution_reservation') else inventory.supervisor.validate(row['reservation_id'])
     identity = (plan.admission or {}).get('identity', {})
     if (identity.get('boot_id'),identity.get('supervisor_epoch')) != (inventory.supervisor.boot_id,inventory.supervisor.epoch):
         raise SupervisorRefusal('SIGNER_IDENTITY_STALE')

@@ -306,6 +306,17 @@ class ApnsPushSender:
             priority="5",
         )
 
+    def send_development(self, device_id: str, *, notification_id: str, count: int) -> None:
+        if not notification_id or type(count) is not int or not 1 <= count <= 100:
+            raise PushSendError("invalid development notification", permanent=True)
+        with self._sessions() as session:
+            row=session.execute(select(Device.status,Device.scopes).where(Device.device_id==device_id)).first()
+            if row is None or row.status!='active' or 'dal.read' not in json.loads(row.scopes):
+                raise PushSendError("development device permission unavailable",permanent=True)
+        payload = build_alert_payload("开发事项更新", f"有 {count} 项开发进展或待处理事项，请打开 Timeline 查看。")
+        payload["development_notification_id"] = notification_id
+        self._send(device_id, payload, collapse_id="development:" + notification_id, priority="5")
+
     def send_alert(
         self,
         device_id: str,

@@ -24,6 +24,7 @@ final class ChatModel {
     /// Oldest-to-newest, exactly as the server ordered it.
     var events: [TimelineEvent] = []
     var hasOlder = false
+    var focusedDevelopmentEventID: String?
     var draft: String = ""
     /// The photo has only been prepared locally.  It is not a Timeline event,
     /// not a server object and not an authorization to send until the user taps
@@ -127,6 +128,10 @@ final class ChatModel {
         while acceptanceWork > 0 { try? await Task.sleep(for: .milliseconds(50)) }
     }
 
+    var developmentReplyContext: DevelopmentReplyContext?
+    var developmentAuthorizationSession: DeviceSession?
+    var loadDevelopmentContext: ((String) async throws -> DevelopmentReplyContext)?
+    var loadDevelopmentDocument: ((String) async throws -> DevelopmentDocument)?
     private let timeline: ChatTimeline
     private let mediaUploads: MediaUploadCoordinator
     private let mediaBackend: any MediaUploadBackend
@@ -269,6 +274,22 @@ final class ChatModel {
     /// durable slots: it appends older history and makes no claim about current
     /// state, so `refresh()` — not this — is the gesture that means "show me
     /// everything as it is now".
+    func focusDevelopmentEvent(_ id: String) async {
+        focusedDevelopmentEventID = nil
+        await refresh()
+        for _ in 0..<20 {
+            if events.contains(where: { $0.eventID == id }) {
+                focusedDevelopmentEventID = id
+                return
+            }
+            guard hasOlder, !Task.isCancelled else { break }
+            let count = events.count
+            await loadOlder()
+            if count == events.count { break }
+        }
+        lastError = "通知对应的消息暂未加载，请在 Timeline 继续加载历史消息。"
+    }
+
     func loadOlder() async {
         guard !acceptanceStopping else { return }
         acceptanceWork += 1
@@ -301,6 +322,11 @@ final class ChatModel {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let photo = preparedPhoto
         guard !text.isEmpty || photo != nil else { return }
+        if photo != nil && developmentReplyContext != nil {
+            lastError = "回复开发文档时请发送文字；图片可以另发一条消息。"
+            return
+        }
+        let replyContext = developmentReplyContext
         busy = true
         defer { busy = false }
         // Consume this draft synchronously. The field remains editable while
@@ -336,9 +362,11 @@ final class ChatModel {
                 receipt = try await timeline.send(
                     text: text,
                     clarificationOf: clarificationOf,
-                    startNewSession: startNewSession
+                    startNewSession: startNewSession,
+                    dalReplyContext: replyContext
                 )
             }
+            developmentReplyContext = nil
             answering = nil
             startNewTopic = false
             liveReceipt = receipt
@@ -369,6 +397,33 @@ final class ChatModel {
         // find their words still in the box.
         if lastError != nil, unresolved == nil, !hasPendingPhotoSend, draft.isEmpty {
             draft = text
+        }
+    }
+
+    /// Task actions have their own input; never consume the ordinary composer,
+    /// selected photo, pending document reply, or another topic's clarification.
+    func sendDevelopmentAction(_ action: DevelopmentTaskAction, taskID: String, text: String = "") async throws {
+        guard !busy, !acceptanceStopping else { throw DevelopmentActionError.busy }
+        let command = try action.command(taskID: taskID, text: text)
+        busy = true
+        acceptanceWork += 1
+        defer { busy = false; acceptanceWork -= 1; sending = nil }
+        guard try loadPendingPhotoSend() == nil,
+              try await timeline.pendingSend() == nil else { throw DevelopmentActionError.busy }
+        sending = DevelopmentTaskAction.displayText(command)
+        do {
+            let receipt = try await timeline.send(text: command)
+            liveReceipt = receipt
+            lastError = nil
+            // A failed refresh after POST is not permission to resend.
+            do { try await timeline.syncNewer() }
+            catch { lastError = "操作已发送，结果同步暂未完成，请刷新对话查看。" }
+            await mirror(refreshLegacyOverrides: false)
+            await mirrorPendingSlots()
+        } catch {
+            lastError = describe(error)
+            await mirrorPendingSlots()
+            throw error
         }
     }
 

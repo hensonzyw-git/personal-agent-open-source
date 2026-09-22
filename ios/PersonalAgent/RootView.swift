@@ -26,6 +26,7 @@ struct RootView: View {
                     ServiceStatusView(model: model)
                 }
             }
+            .id(model.developmentNavigationID)
         }
     }
 
@@ -41,6 +42,31 @@ struct RootView: View {
                 )
             }
             ChatView(model: chat, review: model.review)
+        }
+        .task(id: model.pendingDevelopmentEventID) {
+            if let id = model.pendingDevelopmentEventID {
+                await chat.focusDevelopmentEvent(id)
+                if model.pendingDevelopmentEventID == id { model.pendingDevelopmentEventID = nil }
+            }
+        }
+        .task(id: model.pendingDevelopmentNotificationID) { await model.openDevelopmentNotification() }
+        .sheet(isPresented: Binding(get: { !model.developmentNotificationItems.isEmpty }, set: { if !$0 { model.developmentNotificationItems = [] } })) {
+            NavigationStack {
+                List(model.developmentNotificationItems) { item in
+                    Button {
+                        model.developmentNotificationItems = []
+                        model.pendingDevelopmentEventID = item.eventID
+                    } label: {
+                        VStack(alignment: .leading) {
+                            Text(item.text)
+                            if !item.current { Text("已处理或已失效，打开可查看原消息。").font(.caption) }
+                        }
+                    }
+                }.navigationTitle("开发事项")
+            }
+        }
+        .alert("开发通知暂时无法读取，请从 Timeline 查看最新消息。", isPresented: $model.developmentNotificationError) {
+            Button("知道了", role: .cancel) { }
         }
         .background(Color.screenBackground)
         .navigationTitle("Personal Agent")
@@ -153,6 +179,9 @@ struct ServiceStatusView: View {
                 .listRowBackground(Color.cardSurface)
             }
 
+            Section {
+                NavigationLink("开发") { DevelopmentWorkbench(model: model) }
+            }
             Section {
                 row("App 版本", Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
                 row("构建号", Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")

@@ -332,6 +332,8 @@ async def transport_body_guard(request: Request) -> None:
     malformed or mismatching digest is a 400, never a silent repair.
     """
     limit = 256*1024 if request.url.path.endswith("/execution-result") else MAX_BODY_BYTES
+    if request.url.path in ("/workflow/publication", "/workflow/result"):
+        limit = 3*1024*1024
     length = request.headers.get("content-length")
     if length is not None:
         try:
@@ -647,6 +649,7 @@ def create_app(
     github_adapter: Any | None = None,
     resume_config: dict | None = None,
     execution_config=None,
+    timeline_config_path: Path | None = None,
 ) -> FastAPI:
     service = Service(
         engine,
@@ -657,7 +660,26 @@ def create_app(
         lease_ttl_seconds=lease_ttl_seconds,
         max_attempts=max_attempts,
     )
-    app = FastAPI(title="DAL Worker Transport", version="1.0.0")
+    from contextlib import asynccontextmanager, suppress
+    import asyncio
+    timeline = None
+    @asynccontextmanager
+    async def lifespan(app):
+        task=asyncio.create_task(timeline.runner.run()) if timeline is not None else None
+        try:yield
+        finally:
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):await task
+    app = FastAPI(title="DAL Worker Transport", version="1.0.0", lifespan=lifespan)
+    from personal_agent_dal.timeline.config import load_endpoint
+    from personal_agent_dal.timeline.transport import mount_routes as mount_timeline_routes
+    timeline = load_endpoint(timeline_config_path, engine=engine, kill_switch=lambda: service.kill_switch) if timeline_config_path else None
+    mount_timeline_routes(app, timeline)
+    from personal_agent_dal.timeline.operator import mount_routes as mount_timeline_operator
+    mount_timeline_operator(app,timeline,service)
+    from personal_agent_dal.timeline.runner import mount_routes as mount_workflow_routes
+    mount_workflow_routes(app,timeline,service,github_adapter)
     from personal_agent_dal.service.resume_routes import mount_routes
     mount_routes(app, engine, service, resume_config, execution_config)
 

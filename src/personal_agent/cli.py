@@ -176,6 +176,7 @@ def main() -> None:
         ledger_url=ledger_url,
         dal_resume_config=Path(os.environ["PERSONAL_AGENT_DAL_RESUME_BRIDGE_CONFIG"]) if os.environ.get("PERSONAL_AGENT_DAL_RESUME_BRIDGE_CONFIG") else None,
 
+        dal_timeline_config=Path(os.environ["PERSONAL_AGENT_DAL_TIMELINE_BRIDGE_CONFIG"]) if os.environ.get("PERSONAL_AGENT_DAL_TIMELINE_BRIDGE_CONFIG") else None,
         media=media,
         v2_device_ids=_v2_devices_from_env(),
         v2_execution_enabled=os.environ.get('ADK_RUNTIME_V2_EXECUTION','true')=='true',

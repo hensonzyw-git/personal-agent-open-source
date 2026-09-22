@@ -731,6 +731,16 @@ class RemoteHttpAdapter(WorkerTransport):
             stale=False,
         )
 
+    def workflow_call(self, operation: str, body: dict) -> dict:
+        if operation not in ('claim','prelaunch','status','result','stop','publication'):
+            raise TransportError('workflow_operation_invalid')
+        response=self._authenticated('/workflow/'+operation,body,retry_server_errors=operation in ('status','result'))
+        if response.status_code not in ((200,202) if operation=='publication' else (200,)):raise TransportError('workflow_request_refused')
+        try:value=response.json()
+        except ValueError:raise TransportError('workflow_response_invalid') from None
+        if not isinstance(value,dict):raise TransportError('workflow_response_invalid')
+        return value
+
     def close(self) -> None:
         if self._owns_client:
             self._client.close()

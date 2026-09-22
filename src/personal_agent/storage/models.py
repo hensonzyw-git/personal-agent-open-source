@@ -1307,3 +1307,118 @@ class MediaBinding(Base):
 from personal_agent.storage.run_schema_v2 import register_run_tables
 
 register_run_tables(Base.metadata)
+
+
+class DalTimelineCommand(Base):
+    """Encrypted PA outbox; transport completion never implies execution."""
+    __tablename__ = 'dal_timeline_commands'
+    submission_sha256: Mapped[str | None] = mapped_column(Text)
+    command_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey('devices.device_id', ondelete='RESTRICT'), nullable=False)
+    key_thumbprint: Mapped[str] = mapped_column(Text, nullable=False)
+    body_sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    sealed_body: Mapped[dict[str, Any]] = mapped_column(EncryptedEnvelope, nullable=False)
+    sealed_receipt: Mapped[dict[str, Any] | None] = mapped_column(EncryptedEnvelope)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(UtcTimestamp)
+    delivery_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    __table_args__ = (
+        CheckConstraint("status IN ('queued','delivery_unknown','cancelled','accepted','refused')", name='timeline_command_status'),
+        CheckConstraint('attempts >= 0', name='timeline_command_attempts'),
+        CheckConstraint("status != 'cancelled' OR attempts = 0", name='timeline_cancel_unsent'),
+        CheckConstraint("status != 'delivery_unknown' OR attempts > 0", name='timeline_unknown_sent'),
+        CheckConstraint("(status IN ('accepted','refused') AND sealed_receipt IS NOT NULL AND attempts > 0) OR (status NOT IN ('accepted','refused') AND sealed_receipt IS NULL)", name='timeline_receipt'),
+    )
+
+
+class DalConsumerCursor(Base):
+    __tablename__='dal_consumer_cursors'
+    consumer_id: Mapped[str]=mapped_column(Text,primary_key=True)
+    stream_id: Mapped[str]=mapped_column(Text,nullable=False)
+    received_seq: Mapped[int]=mapped_column(Integer,nullable=False)
+    acked_seq: Mapped[int]=mapped_column(Integer,nullable=False)
+    tail_digest: Mapped[str]=mapped_column(Text,nullable=False)
+    version: Mapped[int]=mapped_column(Integer,nullable=False)
+    __table_args__=(CheckConstraint("consumer_id = 'pa-timeline' AND 0 <= acked_seq AND acked_seq <= received_seq AND version >= 1",name='dal_cursor_order'),)
+
+
+class DalEventInbox(Base):
+    __tablename__='dal_event_inbox'
+    event_id: Mapped[str]=mapped_column(Text,primary_key=True)
+    stream_id: Mapped[str]=mapped_column(Text,nullable=False)
+    seq: Mapped[int]=mapped_column(Integer,nullable=False)
+    digest: Mapped[str]=mapped_column(Text,nullable=False)
+    workflow_id: Mapped[str]=mapped_column(Text,nullable=False)
+    timeline_event_id: Mapped[str]=mapped_column(ForeignKey('conversation_events.event_id',ondelete='RESTRICT'),nullable=False)
+    __table_args__=(UniqueConstraint('stream_id','seq',name='dal_inbox_sequence'),)
+
+
+class DalContextBinding(Base):
+    __tablename__='dal_context_bindings'
+    context_id: Mapped[str]=mapped_column(Text,primary_key=True)
+    device_id: Mapped[str]=mapped_column(ForeignKey('devices.device_id',ondelete='RESTRICT'),nullable=False)
+    decision_id: Mapped[str]=mapped_column(Text,nullable=False)
+    event_id: Mapped[str]=mapped_column(ForeignKey('conversation_events.event_id',ondelete='RESTRICT'),nullable=False)
+    binding_digest: Mapped[str]=mapped_column(Text,nullable=False)
+    sealed_context: Mapped[dict[str,Any]]=mapped_column(EncryptedEnvelope,nullable=False)
+    expires_at: Mapped[datetime]=mapped_column(UtcTimestamp,nullable=False)
+    consumed: Mapped[int]=mapped_column(Integer,nullable=False)
+    __table_args__=(UniqueConstraint('device_id','decision_id',name='dal_context_device_decision'),)
+
+
+class DalNotification(Base):
+    """Opaque event references only; lock-screen text never contains artifacts."""
+    __tablename__ = 'dal_notifications'
+    notification_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey('devices.device_id'), nullable=False)
+    event_id: Mapped[str] = mapped_column(ForeignKey('conversation_events.event_id'), nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+    __table_args__ = (
+        UniqueConstraint('device_id', 'event_id', name='dal_notification_delivery'),
+        CheckConstraint("status IN ('pending','sending','provider_accepted','undeliverable') AND attempts >= 0", name='dal_notification_state'),
+    )
+
+
+class DalDecisionState(Base):
+    """Device-independent projection, including tombstones for unseen decisions."""
+    __tablename__ = 'dal_decision_states'
+    decision_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_id: Mapped[str] = mapped_column(Text, nullable=False)
+    binding_digest: Mapped[str | None] = mapped_column(Text)
+    event_id: Mapped[str | None] = mapped_column(ForeignKey('conversation_events.event_id'))
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    source_seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    __table_args__ = (CheckConstraint("status IN ('pending','consumed','superseded') AND source_seq >= 1", name='dal_decision_projection'),)
+
+
+class DalNotificationBatch(Base):
+    __tablename__ = 'dal_notification_batches'
+    batch_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey('devices.device_id'), nullable=False)
+    event_ids: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcTimestamp, nullable=False)
+
+
+class DalNotificationMembership(Base):
+    __tablename__ = 'dal_notification_memberships'
+    notification_id: Mapped[str] = mapped_column(ForeignKey('dal_notifications.notification_id'), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(ForeignKey('dal_notification_batches.batch_id'), nullable=False)
+
+
+class DalAuthorizationContext(Base):
+    __tablename__='dal_authorization_contexts'
+    context_id: Mapped[str]=mapped_column(Text,primary_key=True)
+    device_id: Mapped[str]=mapped_column(ForeignKey('devices.device_id',ondelete='RESTRICT'),nullable=False)
+    key_thumbprint: Mapped[str]=mapped_column(Text,nullable=False)
+    proposal_id: Mapped[str]=mapped_column(Text,nullable=False)
+    binding_digest: Mapped[str]=mapped_column(Text,nullable=False)
+    sealed_context: Mapped[dict[str,Any]]=mapped_column(EncryptedEnvelope,nullable=False)
+    expires_at: Mapped[datetime]=mapped_column(UtcTimestamp,nullable=False)
+    token_jti: Mapped[str|None]=mapped_column(Text)
+    token_expires_at: Mapped[datetime|None]=mapped_column(UtcTimestamp)
+    command_id: Mapped[str|None]=mapped_column(ForeignKey('dal_timeline_commands.command_id'))
+    __table_args__=(UniqueConstraint('device_id','key_thumbprint','proposal_id',name='authorization_context_device'),)

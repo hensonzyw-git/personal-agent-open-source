@@ -70,6 +70,7 @@ public actor ChatTimeline {
         public let clarificationOf: String?
         /// Nil preserves decoding of pending sends written by older app builds.
         public let startNewSession: Bool?
+        public let dalReplyContext: DevelopmentReplyContext?
         /// Every operation this message produced, in plan order — item 0 first.
         /// Known only as the server answers: the anchor merge names the
         /// message's own operation, and each device report names the plan item
@@ -114,6 +115,7 @@ public actor ChatTimeline {
             parts: [ChatInputPart]? = nil,
             clarificationOf: String?,
             startNewSession: Bool? = nil,
+            dalReplyContext: DevelopmentReplyContext? = nil,
             operationID: String? = nil,
             operationIDs: [String] = [],
             deliveredActionIDs: [String] = [],
@@ -125,6 +127,7 @@ public actor ChatTimeline {
             self.parts = parts
             self.clarificationOf = clarificationOf
             self.startNewSession = startNewSession
+            self.dalReplyContext = dalReplyContext
             // A caller that knows the message's own operation (the anchor merge,
             // and every test written before plans were tracked) still says one
             // id; the list is that id plus whatever reports add later.
@@ -137,7 +140,7 @@ public actor ChatTimeline {
         private enum CodingKeys: String, CodingKey {
             case idempotencyKey, conversationID, text, parts, clarificationOf
             case startNewSession, operationID, operationIDs, deliveredActionIDs
-            case releasedOperationIDs
+            case releasedOperationIDs, dalReplyContext
             /// The one-action marker builds before design §4.2 wrote. Read as
             /// a fact about what already ran; also written, so that a build
             /// rolled back to one of those does not read an empty marker and
@@ -150,6 +153,7 @@ public actor ChatTimeline {
             idempotencyKey = try container.decode(String.self, forKey: .idempotencyKey)
             conversationID = try container.decode(String.self, forKey: .conversationID)
             text = try container.decode(String.self, forKey: .text)
+            dalReplyContext = try container.decodeIfPresent(DevelopmentReplyContext.self, forKey: .dalReplyContext)
             parts = try container.decodeIfPresent([ChatInputPart].self, forKey: .parts)
             clarificationOf = try container.decodeIfPresent(
                 String.self, forKey: .clarificationOf
@@ -190,6 +194,7 @@ public actor ChatTimeline {
             try container.encode(idempotencyKey, forKey: .idempotencyKey)
             try container.encode(conversationID, forKey: .conversationID)
             try container.encode(text, forKey: .text)
+            try container.encodeIfPresent(dalReplyContext, forKey: .dalReplyContext)
             try container.encodeIfPresent(parts, forKey: .parts)
             try container.encodeIfPresent(clarificationOf, forKey: .clarificationOf)
             try container.encodeIfPresent(startNewSession, forKey: .startNewSession)
@@ -477,7 +482,8 @@ public actor ChatTimeline {
     public func send(
         text: String,
         clarificationOf: String? = nil,
-        startNewSession: Bool = false
+        startNewSession: Bool = false,
+        dalReplyContext: DevelopmentReplyContext? = nil
     ) async throws -> OperationReceipt {
         let id = try requireConversation()
         if let pending = try loadPending() {
@@ -489,6 +495,7 @@ public actor ChatTimeline {
             text: text,
             clarificationOf: clarificationOf,
             startNewSession: startNewSession ? true : nil,
+            dalReplyContext: dalReplyContext,
             operationID: nil
         )
         // Persist before the request leaves. A crash in between leaves a key with
@@ -702,6 +709,7 @@ public actor ChatTimeline {
             text: pending.text,
             clarificationOf: pending.clarificationOf,
             startNewSession: pending.startNewSession == true,
+            dalReplyContext: pending.dalReplyContext,
             idempotencyKey: pending.idempotencyKey
         )
     }
@@ -1539,6 +1547,9 @@ public actor ChatTimeline {
 /// stub only the HTTP layer, so the real client, the real decoding and the real
 /// refresh policy are all still in the loop.
 public protocol ChatBackend: Sendable {
+    func sendChatMessage(conversationID: String, text: String, clarificationOf: String?,
+        startNewSession: Bool, dalReplyContext: DevelopmentReplyContext?, idempotencyKey: String) async throws -> OperationReceipt
+
     func sendChatMessage(
         conversationID: String,
         text: String,
@@ -1632,4 +1643,13 @@ public protocol ChatBackend: Sendable {
         snapshotAsOf: Date,
         syncEpoch: Int
     ) async throws -> CalendarSyncResponse
+}
+
+extension ChatBackend {
+    public func sendChatMessage(conversationID: String, text: String, clarificationOf: String?,
+        startNewSession: Bool, dalReplyContext: DevelopmentReplyContext?, idempotencyKey: String) async throws -> OperationReceipt {
+        guard dalReplyContext == nil else { throw AgentClientError.malformedResponse }
+        return try await sendChatMessage(conversationID: conversationID, text: text, clarificationOf: clarificationOf,
+            startNewSession: startNewSession, idempotencyKey: idempotencyKey)
+    }
 }

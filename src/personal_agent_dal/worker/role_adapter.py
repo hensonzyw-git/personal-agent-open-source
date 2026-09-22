@@ -1,6 +1,7 @@
 """Pinned role launch plans and bounded CLI event decoding. No provider calls."""
 from dataclasses import dataclass, field
 import json
+import hashlib
 import shlex
 import os
 import stat
@@ -30,6 +31,7 @@ class LaunchPlan:
     route_reference: dict | None = None
     admission: dict | None = None
     admission_sha256: str | None = None
+    final_report_path: str | None = None
 
 
 def build_plan(context, reservation, pins, adapter_config=None):
@@ -41,7 +43,7 @@ def build_plan(context, reservation, pins, adapter_config=None):
     from personal_agent_dal.worker.reviewer_route import MODE, validate_route
     configured = adapter_config['roles'][context['execution_role']] if adapter_config else None
     if configured and configured['mode'] == MODE:
-        if context['snapshot'].get('contract_version') != 'dal.role-contract/2.0':
+        if context['snapshot'].get('contract_version') not in ('dal.role-contract/2.0','dal.role-contract/3.0'):
             raise SupervisorRefusal('REVIEWER_CONTRACT_REQUIRED')
         route = validate_route(role, configured, context['execution_role'], reservation, pin.version)
     else:
@@ -61,11 +63,17 @@ def build_plan(context, reservation, pins, adapter_config=None):
     if route['mode']=='codex_login':env['CODEX_HOME']=route['home']
     elif route['mode']=='claude_login':env['CLAUDE_CONFIG_DIR']=route['home']
     writes = (cwd, str(scratch), str(Path(reservation['git'])/'repository')) if role.permission == 'workspace_write' else (str(scratch),)
+    timeline = context['snapshot'].get('contract_version') == 'dal.role-contract/3.0'
+    if timeline and role.permission == 'workspace_write':
+        writes = (cwd, str(scratch))
     reads = (reservation['workspace'], *reservation.get('read_roots', []))
     protected = [*reservation.get('read_roots', []),
         str(Path(reservation['git'])/'repository'/'config'),
         str(Path(reservation['git'])/'repository'/'hooks'),
         *([reservation['workspace']] if role.permission=='read_only' else [])]
+    if timeline:
+        protected.append(str(Path(reservation['git'])/'repository'))
+    final_path=codex_final_path(reservation) if timeline and role.runtime=='codex_cli' else None
     if role.runtime=='codex_cli':
         argv=(str(executable),'exec','--ignore-user-config','--ephemeral','--json','--color','never',
             '--sandbox','workspace-write','--skip-git-repo-check','-C',cwd,'--model',role.model,
@@ -73,7 +81,8 @@ def build_plan(context, reservation, pins, adapter_config=None):
             '-c','sandbox_workspace_write.writable_roots='+json.dumps(list(writes)),
             '-c','sandbox_workspace_write.exclude_tmpdir_env_var=true',
             '-c','sandbox_workspace_write.exclude_slash_tmp=true',
-            '-c','features.multi_agent=false','-c','approval_policy="never"','-')
+            '-c','features.multi_agent=false','-c','approval_policy="never"',
+            *(('--output-last-message',final_path) if final_path else ()), '-')
     elif role.runtime=='claude_code':
         argv=(str(executable),'--print','--safe-mode','--no-session-persistence','--no-chrome',
             '--output-format','stream-json','--verbose','--model',role.model,'--effort',role.reasoning,
@@ -90,12 +99,71 @@ def build_plan(context, reservation, pins, adapter_config=None):
             argv = (*argv[:-1], json.dumps(settings), '--bare', '--setting-sources', '')
     else: raise SupervisorRefusal('ROLE_RUNTIME_UNSUPPORTED')
     return LaunchPlan(argv,cwd,env,role.runtime,pin.executable_sha256,pin.version,
+        wall_seconds=86400 if context['snapshot'].get('contract_version')=='dal.role-contract/3.0' else 600,
         auth_route=route['mode'],auth_home=route['home'],read_roots=reads,write_roots=writes,
-        route_reference=deepcopy(route.get('reference')),
+        route_reference=deepcopy(route.get('reference')),final_report_path=final_path,
         task_directories={name:str(scratch/name) for name in ('scratch','reports','test-copy','cache')})
 
 
-def parse_events(raw, runtime, *, max_steps=64):
+def codex_final_path(reservation):
+    # Separate metadata root is outside all model-tool write roots. Each
+    # execution has a distinct scratch allocation and therefore a fresh output.
+    token=hashlib.sha256(reservation['temp'].encode()).hexdigest()
+    return str(Path(reservation['git'])/('codex-final-'+token+'.txt'))
+
+
+def read_final_report(path):
+    fd=None
+    try:
+        fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+        st=os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid!=os.getuid() or st.st_nlink!=1 or st.st_size>131072:
+            raise ValueError('unsafe final output')
+        with os.fdopen(fd,'rb',closefd=False) as handle:raw=handle.read(131073)
+        if not raw or len(raw)>131072:raise ValueError('final output limit')
+        return raw.decode('utf-8',errors='strict')
+    except (OSError,ValueError,UnicodeError):
+        raise SupervisorRefusal('CLI_FINAL_OUTPUT_INVALID') from None
+    finally:
+        if fd is not None:os.close(fd)
+
+
+def is_counter_telemetry(event, runtime):
+    if runtime!='claude_code' or event.get('type')!='system' or event.get('subtype')!='thinking_tokens':
+        return False
+    if (set(event)!={'type','subtype','estimated_tokens','estimated_tokens_delta','session_id','uuid'}
+        or any(type(event[k]) is not int or event[k]<0 for k in ('estimated_tokens','estimated_tokens_delta'))
+        or any(not isinstance(event[k],str) or not event[k] or len(event[k])>128 for k in ('session_id','uuid'))):
+        raise SupervisorRefusal('CLI_EVENTS_INVALID')
+    return True
+
+
+class CLIEventCounter:
+    """Incremental framing keeps telemetry out of the semantic-step budget.
+
+    The process owner separately enforces the combined stdout/stderr byte cap.
+    """
+    def __init__(self,runtime,max_steps):
+        self.runtime,self.max_steps=runtime,max_steps
+        self.pending=b'';self.events=0;self.steps=0
+
+    def feed(self,chunk):
+        self.pending+=chunk
+        while b'\n' in self.pending:
+            line,self.pending=self.pending.split(b'\n',1)
+            self.events+=1
+            if self.events>65536:raise SupervisorRefusal('CLI_EVENT_STEP_LIMIT')
+            try:
+                event=json.loads(line) if self.runtime=='claude_code' else None
+                if self.runtime=='claude_code' and not isinstance(event,dict):raise ValueError()
+                telemetry=event is not None and is_counter_telemetry(event,self.runtime)
+            except (ValueError,TypeError,UnicodeError):
+                raise SupervisorRefusal('CLI_EVENTS_INVALID') from None
+            if not telemetry:self.steps+=1
+            if self.steps>self.max_steps:raise SupervisorRefusal('CLI_EVENT_STEP_LIMIT')
+
+
+def parse_events(raw, runtime, *, max_steps=64, final_report=None):
     """Tool use is valid; malformed, incomplete and ambiguous finals fail closed."""
     if len(raw)>4194304 or not raw.endswith(b'\n'):raise SupervisorRefusal('CLI_STREAM_TRUNCATED')
     report=[]; tools=[]; pending=set(); completed=False
@@ -103,11 +171,14 @@ def parse_events(raw, runtime, *, max_steps=64):
     outcome='succeeded';reason=None
     try:
         lines = raw.decode('utf-8',errors='strict').splitlines()
-        if len(lines) > max_steps: raise SupervisorRefusal('CLI_EVENT_STEP_LIMIT')
-        for line in raw.decode('utf-8',errors='strict').splitlines():
+        if len(lines)>65536:raise SupervisorRefusal('CLI_EVENT_STEP_LIMIT')
+        steps=0
+        for line in lines:
             event=json.loads(line)
             if not isinstance(event,dict) or not isinstance(event.get('type'),str) or completed:
                 raise ValueError('event shape/order')
+            if not is_counter_telemetry(event,runtime):steps+=1
+            if steps>max_steps:raise SupervisorRefusal('CLI_EVENT_STEP_LIMIT')
             kind=event['type']
             if not kind: raise ValueError('empty event')
             if runtime=='codex_cli':
@@ -152,7 +223,15 @@ def parse_events(raw, runtime, *, max_steps=64):
         raise
     except (ValueError,KeyError,TypeError,UnicodeError,AttributeError) as exc:
         raise SupervisorRefusal('CLI_EVENTS_INVALID') from exc
-    return dict(report='\n'.join(report),tool_events=tools,usage=usage,outcome=outcome,reason=reason)
+    progress=[]
+    if final_report is not None:
+        if runtime!='codex_cli' or not isinstance(final_report,str) or not final_report or not report or final_report!=report[-1]:
+            raise SupervisorRefusal('CLI_FINAL_OUTPUT_MISMATCH')
+        progress=report[:-1]
+        report=[final_report]
+    result=dict(report='\n'.join(report),tool_events=tools,usage=usage,outcome=outcome,reason=reason)
+    if final_report is not None:result['progress_messages']=progress
+    return result
 
 
 def load_adapter_config(path):

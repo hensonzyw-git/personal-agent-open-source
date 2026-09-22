@@ -121,8 +121,10 @@ def test_runtime_flags_cannot_enable_provider(tmp_path,monkeypatch,capsys,extra,
 def test_source_inventory_uses_actual_reviewed_bytes(tmp_path, monkeypatch, attack):
     import hashlib
     import subprocess
-    git = Path('/home/example/private-path').resolve()
-    assert git.exists()
+    import shutil
+    executable = shutil.which('git')
+    assert executable is not None, 'Git is required for source inventory boundary tests'
+    git = Path(executable).resolve()
     repo = tmp_path/'repo'; repo.mkdir()
     env = {'PATH': str(git.parent)+':/usr/bin:/bin', 'HOME': str(tmp_path),
            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null'}

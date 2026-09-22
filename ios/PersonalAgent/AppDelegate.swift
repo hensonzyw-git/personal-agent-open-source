@@ -8,7 +8,37 @@ import UserNotifications
 /// so an `UIApplicationDelegateAdaptor` is the one place those callbacks land.
 /// The coordinator itself lives on the app model, where it can reach the
 /// device session; this delegate only forwards the bytes iOS hands back.
-final class AppDelegate: NSObject, UIApplicationDelegate {
+final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
+    var developmentBatchNotification: ((String) -> Void)?
+    var pendingDevelopmentNotificationID: String?
+    var developmentNotification: ((String) -> Void)?
+    var pendingDevelopmentEventID: String?
+
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        UNUserNotificationCenter.current().delegate = self
+        return true
+    }
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void) {
+        // A notification is a navigation hint, never an approval or a URL to execute.
+        if let id = response.notification.request.content.userInfo["development_event_id"] as? String,
+           !id.isEmpty, id.utf8.count <= 128, id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "_.:-".contains($0)) }) {
+            Task { @MainActor in
+                self.pendingDevelopmentEventID = id
+                self.developmentNotification?(id)
+            }
+        }
+        if let id = response.notification.request.content.userInfo["development_notification_id"] as? String,
+           !id.isEmpty, id.utf8.count <= 128, id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "_.:-".contains($0)) }) {
+            Task { @MainActor in
+                self.pendingDevelopmentNotificationID = id
+                self.developmentBatchNotification?(id)
+            }
+        }
+        completionHandler()
+    }
+
     /// Set by `AppModel` once the coordinator exists, so the callbacks iOS
     /// fires during `registerForRemoteNotifications` reach it.
     var pushCoordinator: PushCoordinator?

@@ -1,0 +1,31 @@
+{
+  "schema_version": "dal.timeline-vectors/1.0",
+  "synthetic": true,
+  "document": {
+    "schema_version": "dal.timeline/1.0",
+    "artifact_id": "synthetic-artifact",
+    "workflow_id": "synthetic-task",
+    "kind": "prd",
+    "revision": 1,
+    "body_sha256": "ef607ab0559e8194fba3a51c36a2f6335fce82ed2c81d28096f0a90d2128bbbb",
+    "offset": 0,
+    "total_bytes": 40,
+    "text": "合成 PRD\n\n直接在 Timeline 审核。",
+    "next_offset": null,
+    "complete": true
+  },
+  "reply_context": {
+    "event_id": "synthetic-event",
+    "token": "synthetic-context-not-a-valid-signature"
+  },
+  "update": {
+    "schema_version": "dal.timeline/1.0",
+    "task_id": "synthetic-task",
+    "text": "合成待审通知",
+    "phase": "prd_waiting",
+    "status": "active",
+    "artifact": {
+      "artifact_id": "synthetic-artifact"
+    }
+  }
+}

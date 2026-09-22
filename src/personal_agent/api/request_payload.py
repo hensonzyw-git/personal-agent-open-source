@@ -52,6 +52,8 @@ class ChatRequestPayload:
     #: and the only thing that distinguishes "no text part" from an empty one:
     #: both give `text == ""`, so the distinction lives here or nowhere.
     parts: Parts = ()
+    dal_reply_context: dict[str, str] | None = None
+    device_authority: dict[str, Any] | None = None
 
 
 def seal_chat_request(
@@ -93,6 +95,10 @@ def seal_chat_request(
         ),
         "start_new_session": payload.start_new_session,
     }
+    if payload.device_authority is not None:
+        data["device_authority"] = validate_device_authority(payload.device_authority)
+    if payload.dal_reply_context is not None:
+        data["dal_reply_context"] = validate_reply_context(payload.dal_reply_context)
     if payload.parts:
         # §3.2 seals the schema version alongside the original structure, and
         # only for a parts request: a text-only payload keeps exactly the shape
@@ -176,6 +182,8 @@ def open_chat_request(
         finance_retry_context=retry_context,
         start_new_session=_optional_bool(data.get("start_new_session"), False),
         parts=_open_parts(data),
+        dal_reply_context=validate_reply_context(data.get("dal_reply_context")),
+        device_authority=validate_device_authority(data.get("device_authority")),
     )
 
 
@@ -200,6 +208,7 @@ def describes_request(
     parts: Parts,
     clarification_of: str | None,
     start_new_session: bool,
+    dal_reply_context: dict[str, str] | None = None,
 ) -> bool:
     """Whether a sealed payload describes the request now in hand (§3.2).
 
@@ -224,6 +233,7 @@ def describes_request(
         and payload.text == text
         and payload.clarification_of == clarification_of
         and payload.start_new_session == start_new_session
+        and payload.dal_reply_context == dal_reply_context
         and same_parts(payload.parts, parts)
     )
 
@@ -340,3 +350,24 @@ def _optional_bool(value: Any, default: bool) -> bool:
 
 def _invalid(detail: str) -> AppError:
     return AppError(ErrorCode.INVALID_ARGUMENT, internal_detail=detail)
+
+
+def validate_reply_context(value):
+    if value is None:
+        return None
+    if (not isinstance(value, dict) or set(value) != {"event_id", "token"}
+        or any(not isinstance(v, str) or not v for v in value.values())
+        or len(value["event_id"]) > 128 or len(value["token"]) > 16384):
+        raise _invalid("invalid development reply context")
+    return dict(value)
+
+
+def validate_device_authority(value):
+    if value is None:return None
+    if (not isinstance(value,dict) or set(value)!={'subject_id','key_thumbprint','scopes','client_wire_version'}
+        or not isinstance(value['subject_id'],str) or not value['subject_id'].startswith('device:')
+        or not isinstance(value['key_thumbprint'],str) or not value['key_thumbprint']
+        or type(value['client_wire_version']) is not int or value['client_wire_version']<1
+        or not isinstance(value['scopes'],list) or any(not isinstance(x,str) for x in value['scopes'])):
+        raise _invalid('sealed device authority malformed')
+    return value
