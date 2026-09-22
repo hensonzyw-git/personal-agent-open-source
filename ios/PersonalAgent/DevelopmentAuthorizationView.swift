@@ -121,6 +121,10 @@ struct DevelopmentAuthorizationView: View {
                 else if let p = project {
                     actions = Set(p.actions.filter { ["read","write","create","local_init"].contains($0) })
                 }
+                if let previous {
+                    unlimitedTime = previous["budget_seconds"] == .null
+                    untilRevoked = previous["expires_at"] == .null
+                }
                 if case .number(let used) = previous?["budget_seconds"] { seconds = Int(used) }
                 if let p = project {
                     let proposed = Date().addingTimeInterval(Double(min(3600, p.maxValidity ?? 31536000)))

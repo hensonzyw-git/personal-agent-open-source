@@ -197,3 +197,17 @@ def test_real_plan_cannot_inherit_synthetic_acceptance(runtime,monkeypatch):
     monkeypatch.setattr('subprocess.Popen',lambda *a,**kw:pytest.fail('real launch'))
     with pytest.raises(SupervisorRefusal,match='MINI_ACCEPTANCE_REQUIRED'):
         run_process(inv,c['attempt_id'],plan,heartbeat=lambda:True,deadline=9999999999)
+
+
+def test_local_lease_deadline_stops_even_when_heartbeat_keeps_approving(runtime):
+    import time
+    t,l,c,s,k=runtime
+    row=prepare_runtime(t,l,c,**k);inv=RuntimeInventory(s)
+    inv.transition(c['attempt_id'],'prepared','dispatch_requested')
+    inv.transition(c['attempt_id'],'dispatch_requested','granted')
+    reservation=s.validate(row['reservation_id'])
+    plan=fixture_plan(reservation,'timeout',wall_seconds=2)
+    started=time.monotonic()
+    result=run_process(inv,c['attempt_id'],plan,heartbeat=lambda:True,deadline=time.time()+10.1)
+    assert result['reason']=='CLI_TIMEOUT' and result['stop']['process_exited']
+    assert time.monotonic()-started<2

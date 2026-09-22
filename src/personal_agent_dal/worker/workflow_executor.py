@@ -180,6 +180,7 @@ class RepositoryExecutor:
         shutil.copytree(self.work,scratch,ignore=shutil.ignore_patterns('.git'),symlinks=False)
         results=[]
         diagnostics=[]
+        diagnostic_bytes=0
         for spec in commands:
             if not heartbeat():raise SupervisorRefusal('AUTHORITY_LOST')
             executable=str(verify_executable(spec['pin']))
@@ -197,12 +198,15 @@ class RepositoryExecutor:
             results.append(dict(argv_digest=digest(list(argv)),exit_code=code,output_digest=hashlib.sha256(output.encode()).hexdigest()))
             if code!=0:
                 from personal_agent_dal.machine.execution_results import _SECRET
-                if _SECRET.search(output):
+                import re
+                extra_secret=re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----|AGE-SECRET-KEY-|\b(?:[A-Z_]*(?:TOKEN|KEY|PASSWORD|SECRET)[A-Z_]*|authorization|cookie)\s*[\"\']?\s*[:=]\s*[^\s,}]+',re.I)
+                if _SECRET.search(output) or extra_secret.search(output):
                     diagnostics.append('验证输出含凭据模式，已隐藏；需人工核查。')
-                elif len(output.encode())>65536:
-                    diagnostics.append('验证输出超过 65536 字节，未附带；需检查本机验证日志。')
+                elif diagnostic_bytes+len(output.encode())>32768:
+                    diagnostics.append('验证输出超过总计 32768 字节，未附带；需检查本机验证日志。')
                 else:
                     diagnostics.append(output)
+                    diagnostic_bytes+=len(output.encode())
         self.observe_candidate()
         return dict(kind='verification',text='固定验证命令已执行。'+''.join('\n'+d for d in diagnostics),candidate=candidate,passed=all(r['exit_code']==0 for r in results),commands=results)
 

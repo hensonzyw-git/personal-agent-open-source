@@ -202,8 +202,10 @@ def test_large_unchanged_baseline_does_not_consume_candidate_scan_budget(reposit
 @pytest.mark.parametrize('content,expected', [
     ('synthetic assertion failed', 'synthetic assertion failed'),
     ('ghp_'+'x'*32, '验证输出含凭据模式'),
-    ('x'*65537, '验证输出超过 65536 字节'),
-], ids=['failure','secret','overflow'])
+    ('x'*65537, '验证输出超过总计 32768 字节'),
+    ('AGE-SECRET-KEY-SYNTHETIC', '验证输出含凭据模式'),
+    ('CUSTOM_TOKEN=synthetic-only', '验证输出含凭据模式'),
+], ids=['failure','secret','overflow','age','custom-token'])
 def test_native_failed_verification_diagnostics_are_safe(repository,content,expected):
     executor,inputs,_=repository
     commands=executor.config['projects']['project']['verification_commands']

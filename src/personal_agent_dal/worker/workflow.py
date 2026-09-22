@@ -149,6 +149,9 @@ class WorkflowWorker:
         with self.inventory.owner(binding['execution_id']):return self._execute(row)
 
     def _execute(self,row):
+        if self.config.get('provider_budget_file'):
+            from personal_agent_dal.worker.provider_budget import available
+            if not available(self.config['provider_budget_file']):return {'status':'provider_budget_exhausted'}
         context=row['binding'];inputs=context['execution_input'];binding=context['execution_binding'];attempt=binding['execution_id']
         reservation=self.inventory.execution_reservation(attempt)
         if inputs['phase'] in ('coding','fix','stage_commit') and not {'read','write'}<=set(inputs.get('authorization',{}).get('actions',[])):

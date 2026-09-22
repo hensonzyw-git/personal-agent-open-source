@@ -85,7 +85,7 @@ def prepare_stage(driver,s,wf):
     if wf.phase=='fix':
         failed=s.scalar(select(Step).where(Step.workflow_id==wf.workflow_id,
             Step.stage_id==row.stage_id,Step.stage_revision==row.revision,
-            Step.phase=='verify',Step.status=='completed').order_by(Step.expected_version.desc()))
+            Step.phase=='verify',Step.status=='completed').order_by(Step.expected_version.desc()).limit(1))
         if failed is not None:
             result=driver.r._open(Step,failed.step_id,'sealed_result',failed.sealed_result)
             if digest(result)!=failed.result_digest:raise ValueError('INPUT_INTEGRITY_FAILED')

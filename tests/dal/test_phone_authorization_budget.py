@@ -30,6 +30,10 @@ def test_renewal_preserves_spent_and_releases_only_unstarted_reservation(world):
         assert all(row.grant_id==original['grant_id'] for row in rows)
         assert s.get(Step,'budget-step-1').status=='completed'
         assert s.get(Step,'budget-step-2').status=='retired'
+    import pytest
+    from personal_agent_dal.timeline.driver import WorkflowDriver
+    with pytest.raises(ValueError,match='STEP_NOT_DISPATCHABLE'):
+        WorkflowDriver(r,roles=None).dispatch('budget-step-2',admission={})
 
 
 def test_new_allowed_device_can_renew_without_rewriting_original_grant_subject(world):
@@ -55,3 +59,19 @@ def test_new_allowed_device_can_renew_without_rewriting_original_grant_subject(w
         grant=s.get(Grant,original['grant_id'])
         assert grant.subject=='device:synthetic'
         assert execution_policy(r,s,grant)['template_digest']==state['candidates'][0]['template_digest']
+
+
+def test_outbox_created_at_roundtrip_keeps_retry_deadline_aware(tmp_path):
+    from sqlalchemy import create_engine,MetaData,Table,Column,select
+    from personal_agent_core.sqlite import UtcTimestamp
+    from personal_agent_dal.timeline.authorization_contracts import aware_time
+    engine=create_engine('sqlite:///'+str(tmp_path/'clock.sqlite'))
+    metadata=MetaData();table=Table('clock',metadata,Column('created_at',UtcTimestamp,nullable=False))
+    metadata.create_all(engine)
+    from datetime import datetime,timezone
+    instant=datetime(2026,9,22,tzinfo=timezone.utc)
+    with engine.begin() as connection:connection.execute(table.insert().values(created_at=instant))
+    with engine.connect() as connection:restored=connection.scalar(select(table.c.created_at))
+    assert aware_time((restored+timedelta(hours=24)).isoformat())==instant+timedelta(hours=24)
+    import pytest
+    with pytest.raises(ValueError):UtcTimestamp().process_bind_param(instant.replace(tzinfo=None),None)
