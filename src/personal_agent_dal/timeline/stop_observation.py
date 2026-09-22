@@ -12,10 +12,11 @@ def apply(driver,session,step,execution,observation,assertion):
         and gate is not None and gate.mode=='open' and gate.epoch==step.gate_epoch)
     if step.phase=='stage_commit' and unchanged:
         candidate=inputs['stage']['candidate'];stage=inputs['stage']
+        from personal_agent_dal.timeline.commit_contract import commit_message
         raw=(f"tree {candidate['tree_sha']}\nparent {candidate['head_sha']}\n"
             f"author DAL <dal@localhost> {inputs['prepared_at']} +0000\n"
             f"committer DAL <dal@localhost> {inputs['prepared_at']} +0000\n\n"
-            f"DAL stage {stage['stage_id']}/{stage['revision']}\n").encode()
+            ).encode()+commit_message(stage)
         expected=object_sha('commit',raw)
         if observation['head_sha']==expected and observation['tree_sha']==candidate['tree_sha']:
             # Grants/kill switch still apply; a late observation is not renewed

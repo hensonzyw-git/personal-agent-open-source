@@ -198,10 +198,9 @@ class RepositoryExecutor:
         self.grant({'read','write'})
         self.scan_candidate()
         candidate=self.observe_candidate()
-        subject=self.inputs['stage'].get('goal',{}).get('commit',{}).get('subject')
-        if subject is None:subject='DAL stage '+self.inputs['stage']['stage_id']+'/'+str(self.inputs['stage']['revision'])
-        if not isinstance(subject,str) or not subject.strip() or len(subject.encode())>256 or any(ord(c)<32 for c in subject):raise SupervisorRefusal('COMMIT_PLAN_INVALID')
-        message=(subject+'\n').encode()
+        from personal_agent_dal.timeline.commit_contract import commit_message
+        try:message=commit_message(self.inputs['stage'])
+        except ValueError:raise SupervisorRefusal('COMMIT_PLAN_INVALID') from None
         sha=self.run(['commit-tree',candidate['tree_sha'],'-p',candidate['head_sha']],data=message)
         self.run(['update-ref',self.inputs['workspace']['branch'],sha,candidate['head_sha']])
         if self.run(['rev-parse','HEAD'])!=sha or self.run(['rev-parse','HEAD^{tree}'])!=candidate['tree_sha']:

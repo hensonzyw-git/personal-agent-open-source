@@ -171,7 +171,7 @@ def test_lost_commit_response_is_reconciled_by_exact_object_without_reexecution(
     stage=item['input']['stage'];stamp=item['input']['prepared_at']
     raw=(f"tree {candidate['tree_sha']}\nparent {candidate['head_sha']}\n"
         f"author DAL <dal@localhost> {stamp} +0000\ncommitter DAL <dal@localhost> {stamp} +0000\n\n"
-        f"DAL stage {stage['stage_id']}/{stage['revision']}\n").encode()
+        +stage["goal"]["commit"]["subject"]+"\n").encode()
     observation=dict(process_exited=True,head_sha=object_sha('commit',raw),tree_sha=candidate['tree_sha'])
     proof=driver.proof(item['step_id'],'dal.workflow-stop/1.0',observation)
     def recover(s):
