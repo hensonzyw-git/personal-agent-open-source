@@ -188,3 +188,13 @@ def test_retry_attempts_do_not_multiply_incremental_review_units(world):
         summary=review_summary(requests,s,wf,s.get(Stage,(ident,1)))
         assert summary['incremental_reviews']==1 and summary['execution_attempts']==2
         assert summary['incomplete_attempts']==2 and summary['provider_requests'] is None
+
+
+@pytest.mark.parametrize('subject',[None, 12, '', '  ', 'x' * 257, 'bad\nsubject', 'bad\x00subject'])
+def test_invalid_commit_subject_rejected_before_stage_freeze(subject):
+    from personal_agent_dal.timeline.stages import StageService
+    body=plan();body['nodes'][0]['commit']['subject']=subject
+    # No requests/session is supplied: rejection must precede storage or dispatch.
+    with pytest.raises(ValueError,match='PLAN_INVALID'):
+        StageService(None).freeze(workflow_id='workflow',revision=1,
+            design_digest='a'*64,review_digest='b'*64,body=body)
