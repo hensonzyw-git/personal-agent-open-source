@@ -181,3 +181,19 @@ def test_phone_local_project_has_frozen_bootstrap_and_attested_policy(repository
     evidence=attest(config,template,now=datetime.now(timezone.utc))
     assert evidence['template']['base_sha']==LOCAL_BOOTSTRAP_SHA
     assert executor.prepare()['manifest']['base_sha']==LOCAL_BOOTSTRAP_SHA
+
+
+def test_large_unchanged_baseline_does_not_consume_candidate_scan_budget(repository):
+    """A large existing tree is not an all-files-added candidate."""
+    executor,inputs,_=repository
+    inputs['workspace']=executor.prepare()['manifest']
+    (executor.work/'large-baseline.txt').write_text('synthetic baseline\n' * 550000)
+    executor.run(['add','--all'])
+    executor.run(['commit','-m','Synthetic existing baseline'])
+    base=executor.run(['rev-parse','HEAD'])
+    inputs['stage']={'candidate':{'head_sha':base}}
+    (executor.work/'small-change.txt').write_text('synthetic small change\n')
+    assert executor.candidate(stage_text='synthetic')['candidate']['base_sha']==base
+    (executor.work/'large-baseline.txt').write_text('synthetic changed baseline\n' * 550000)
+    with pytest.raises(SupervisorRefusal,match='CANDIDATE_SCAN_LIMIT'):
+        executor.candidate(stage_text='synthetic oversized changed file')
