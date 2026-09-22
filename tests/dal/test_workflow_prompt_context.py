@@ -33,3 +33,10 @@ def test_preproject_phase_does_not_treat_allocation_as_repository(phase):
     assert 'Do not inspect it' in raw
     assert 'Inspect project source at' not in raw
     assert 'not the user data source' in raw
+
+
+def test_code_review_prompt_states_findings_element_type():
+    from datetime import datetime,timezone
+    from personal_agent_dal.worker.workflow_prompt import build_prompt
+    prompt=build_prompt({'phase':'code_review'},source_directory='/tmp/synthetic-source',scratch_directory='/tmp/synthetic-scratch',now=datetime.now(timezone.utc)).decode()
+    assert 'findings must be an array of nonempty strings, never objects' in prompt
