@@ -222,7 +222,9 @@ def test_phone_remote_attachment_amend_retires_selection_and_reroutes(world,paus
 @pytest.mark.parametrize('operation,phase',[('amend','project_selection'),('renew','project_selection'),
     ('amend','project_registration')])
 def test_bound_workflow_refuses_remote_attachment(world,operation,phase):
-    """A live Binding blocks the reroute guard, so first attachment must be refused."""
+    """Refusal reasons vary by parameter: [amend,project_selection] hits the live-Binding
+    reroute guard; [renew,project_selection] and [amend,project_registration] are refused
+    by the operation/phase conditions before the Binding guard is reached."""
     import hashlib
     from personal_agent_dal.timeline.projects import catalog,bind_phone_choice
     from personal_agent_dal.timeline.decisions import DecisionService
