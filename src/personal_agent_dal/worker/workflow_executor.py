@@ -179,20 +179,32 @@ class RepositoryExecutor:
         self.supervisor.validate(self.reservation['reservation_id'])
         shutil.copytree(self.work,scratch,ignore=shutil.ignore_patterns('.git'),symlinks=False)
         results=[]
+        diagnostics=[]
         for spec in commands:
             if not heartbeat():raise SupervisorRefusal('AUTHORITY_LOST')
             executable=str(verify_executable(spec['pin']))
             argv=(executable,*spec['arguments'])
             sandbox=str(verify_executable(self.config['sandbox_pin']))
-            wrapped=_sandboxed_argv(argv,scratch,Path(self.reservation['temp']),(),(self.work,Path(self.reservation['git'])))
+            from personal_agent_dal.worker.verification_paths import runtime_read_roots
+            wrapped=_sandboxed_argv(argv,scratch,Path(self.reservation['temp']),(),
+                (self.work,Path(self.reservation['git']),*runtime_read_roots(spec)),
+                backup_exclusion_metadata=spec.get('backup_exclusion_metadata',False))
             if wrapped[0]!=sandbox:raise SupervisorRefusal('SANDBOX_PIN_MISMATCH')
             output,code=run_owned(wrapped,cwd=scratch,environment=_child_environment(Path(self.reservation['temp'])),
                 timeout=spec['timeout_seconds'],inventory=self.inventory,attempt=self.attempt,heartbeat=heartbeat,
                 revalidate=lambda:validate_executor(self.config,self.supervisor))
             output=output.decode('utf-8','replace')
             results.append(dict(argv_digest=digest(list(argv)),exit_code=code,output_digest=hashlib.sha256(output.encode()).hexdigest()))
+            if code!=0:
+                from personal_agent_dal.machine.execution_results import _SECRET
+                if _SECRET.search(output):
+                    diagnostics.append('验证输出含凭据模式，已隐藏；需人工核查。')
+                elif len(output.encode())>65536:
+                    diagnostics.append('验证输出超过 65536 字节，未附带；需检查本机验证日志。')
+                else:
+                    diagnostics.append(output)
         self.observe_candidate()
-        return dict(kind='verification',text='固定验证命令已执行。',candidate=candidate,passed=all(r['exit_code']==0 for r in results),commands=results)
+        return dict(kind='verification',text='固定验证命令已执行。'+''.join('\n'+d for d in diagnostics),candidate=candidate,passed=all(r['exit_code']==0 for r in results),commands=results)
 
     def commit(self):
         self.grant({'read','write'})

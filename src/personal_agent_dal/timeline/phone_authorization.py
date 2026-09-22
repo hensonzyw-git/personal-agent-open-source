@@ -206,7 +206,11 @@ class ProjectAuthorizationService:
                 if grant.revoked or (grant.grant_id,grant.version,grant.digest)!=(body.expected_grant.id,body.expected_grant.version,body.expected_grant.digest):raise ValueError('STALE_BINDING')
                 grant_subject=old['subject']
                 if any(old[k]!=v for k,v in dict(project_id=template.project_id,root=template.root,kind=template.kind,
-                    remote_repository=template.remote_repository,registration_policy=policy).items()):raise ValueError('INVALID_ARGUMENT')
+                    registration_policy=policy).items()):raise ValueError('INVALID_ARGUMENT')
+                if old['remote_repository']!=template.remote_repository:
+                    if not (body.operation=='amend' and old['remote_repository'] is None
+                        and template.remote_repository is not None and wf.phase=='project_routing'
+                        and s.get(Binding,wf.workflow_id) is None):raise ValueError('INVALID_ARGUMENT')
                 if not set(old['actions'])<=set(body.requested_actions) or body.operation=='renew' and set(old['actions'])!=set(body.requested_actions):raise ValueError('INVALID_ARGUMENT')
                 if not extends_limit(body.budget_seconds,old['budget_seconds']) or expiry_projection(body.grant_expires_at)<grant.expires_at:raise ValueError('BUDGET_LIMIT_EXCEEDED')
                 association=s.get(Policy,grant.grant_id)

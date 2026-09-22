@@ -28,3 +28,19 @@ def test_scheduler_waits_and_redacts_errors():
     assert stop.delays==[1,15,60]
     assert statuses[-1]['error_type']=='ValueError'
     assert 'private' not in str(statuses)
+
+
+def test_manual_poll_honors_daemon_lock_before_opening_transport(tmp_path,monkeypatch):
+    from personal_agent_dal.worker import cli
+    monkeypatch.setattr(cli,'load_worker_config',lambda _: object())
+    calls=[]
+    def transport(_):
+        calls.append(True)
+        raise ValueError('synthetic stop before network')
+    monkeypatch.setattr(cli,'_open_transport',transport)
+    argv=['--config',str(tmp_path/'worker.json'),'workflow-poll-once','--workflow-config',str(tmp_path/'workflow.json')]
+    with scheduler_lock(tmp_path/'operator-poll.lock'):
+        assert cli.main(argv)==1
+        assert calls==[]
+    assert cli.main(argv)==1
+    assert calls==[True]

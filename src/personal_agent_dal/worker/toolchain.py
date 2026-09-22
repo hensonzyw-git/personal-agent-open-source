@@ -447,6 +447,7 @@ def _sandbox_profile(
     temp_path: Path,
     forbidden_paths: tuple[Path, ...],
     read_only_paths: tuple[Path, ...],
+    *, backup_exclusion_metadata: bool = False,
 ) -> str:
     """Default-deny files/network while permitting one worktree and runtime.
 
@@ -507,6 +508,8 @@ def _sandbox_profile(
         '(deny mach-lookup (global-name "com.apple.securityd"))\n'
         '(deny mach-lookup (global-name "com.apple.securityd.xpc"))\n'
     )
+    if backup_exclusion_metadata:
+        profile += '(allow mach-lookup (global-name "com.apple.backupd.sandbox.xpc"))\n'
     if forbidden_rules:
         profile += f"(deny file-read* {forbidden_rules})\n"
         profile += f"(deny file-write* {forbidden_rules})\n"
@@ -523,13 +526,15 @@ def _sandboxed_argv(
     temp_path: Path,
     forbidden_paths: tuple[Path, ...],
     read_only_paths: tuple[Path, ...],
+    *, backup_exclusion_metadata: bool = False,
 ) -> list[str]:
     if sys.platform != "darwin" or not Path(SANDBOX_EXEC).is_file():
         raise SandboxUnavailableError("darwin sandbox-exec is required")
     return [
         SANDBOX_EXEC,
         "-p",
-        _sandbox_profile(repo_path, temp_path, forbidden_paths, read_only_paths),
+        _sandbox_profile(repo_path, temp_path, forbidden_paths, read_only_paths,
+            backup_exclusion_metadata=backup_exclusion_metadata),
         *command,
     ]
 

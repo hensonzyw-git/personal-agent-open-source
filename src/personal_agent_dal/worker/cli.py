@@ -62,8 +62,9 @@ def main(argv: list[str] | None = None) -> int:
         return serve(config,args.workflow_config)
     if args.command == "workflow-poll-once":
         from personal_agent_dal.worker.workflow import WorkflowWorker,load_config
+        from personal_agent_dal.worker.workflow_daemon import scheduler_lock
         try:
-            with _open_transport(config) as transport:
+            with scheduler_lock(Path(args.workflow_config).parent/'operator-poll.lock'), _open_transport(config) as transport:
                 if not isinstance(transport,RemoteHttpAdapter):raise ValueError('REMOTE_WORKFLOW_TRANSPORT_REQUIRED')
                 result=WorkflowWorker(transport,load_config(args.workflow_config)).poll()
                 return 0 if result.get('status') in ('idle','completed') else 1

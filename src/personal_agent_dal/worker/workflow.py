@@ -58,10 +58,12 @@ def load_config(path):
         if not isinstance(project['verification_commands'],list) or not 1<=len(project['verification_commands'])<=16:
             raise SupervisorRefusal('WORKFLOW_CONFIG_INVALID')
         for command in project['verification_commands']:
-            if (set(command)!={'pin','arguments','timeout_seconds'} or not isinstance(command['arguments'],list)
+            if (set(command)-{'runtime_read_roots','backup_exclusion_metadata'}!={'pin','arguments','timeout_seconds'} or not isinstance(command['arguments'],list)
                 or any(not isinstance(a,str) or '\0' in a for a in command['arguments'])
                 or type(command['timeout_seconds']) is not int or not 1<=command['timeout_seconds']<=3600):
                 raise SupervisorRefusal('WORKFLOW_CONFIG_INVALID')
+            from personal_agent_dal.worker.verification_paths import runtime_read_roots
+            runtime_read_roots(command)
     return body
 
 

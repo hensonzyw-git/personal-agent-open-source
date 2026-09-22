@@ -81,10 +81,20 @@ def prepare_stage(driver,s,wf):
             writer=s.get(Writer,wf.workflow_id)
             if writer is not None:s.delete(writer)
             driver._block(s,wf,'REVIEW_CANDIDATE_UNCHANGED');return None
+    verification_failure=None
+    if wf.phase=='fix':
+        failed=s.scalar(select(Step).where(Step.workflow_id==wf.workflow_id,
+            Step.stage_id==row.stage_id,Step.stage_revision==row.revision,
+            Step.phase=='verify',Step.status=='completed').order_by(Step.expected_version.desc()))
+        if failed is not None:
+            result=driver.r._open(Step,failed.step_id,'sealed_result',failed.sealed_result)
+            if digest(result)!=failed.result_digest:raise ValueError('INPUT_INTEGRITY_FAILED')
+            stages._execution_receipt(s,failed)
+            if not result['passed']:verification_failure=result
     return dict(stage_id=row.stage_id,revision=row.revision,state_version=row.state_version,
         plan_digest=plan.dag_digest,dependency_digest=row.dependency_digest,goal=goal,
         candidate=dict(base_sha=row.base_sha,head_sha=row.head_sha,tree_sha=row.tree_sha),
-        review_fix_cycle=row.review_fix_cycle,review=review)
+        review_fix_cycle=row.review_fix_cycle,review=review,verification_failure=verification_failure)
 
 
 def accept_stage(driver,s,wf,step,result,execution):

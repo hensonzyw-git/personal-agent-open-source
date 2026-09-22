@@ -197,3 +197,26 @@ def test_large_unchanged_baseline_does_not_consume_candidate_scan_budget(reposit
     (executor.work/'large-baseline.txt').write_text('synthetic changed baseline\n' * 550000)
     with pytest.raises(SupervisorRefusal,match='CANDIDATE_SCAN_LIMIT'):
         executor.candidate(stage_text='synthetic oversized changed file')
+
+
+@pytest.mark.parametrize('content,expected', [
+    ('synthetic assertion failed', 'synthetic assertion failed'),
+    ('ghp_'+'x'*32, '验证输出含凭据模式'),
+    ('x'*65537, '验证输出超过 65536 字节'),
+], ids=['failure','secret','overflow'])
+def test_native_failed_verification_diagnostics_are_safe(repository,content,expected):
+    executor,inputs,_=repository
+    commands=executor.config['projects']['project']['verification_commands']
+    commands[0]=dict(pin=pin('/bin/sh'), arguments=['-c','cat failure.txt; exit 1'],timeout_seconds=10)
+    path=Path(executor.config['executor_admission_file'])
+    proof=json.loads(path.read_text())
+    proof['config_digest']=digest({k:executor.config[k] for k in ('git_pin','projects','sandbox_pin')})
+    path.write_text(json.dumps(proof))
+    inputs['workspace']=executor.prepare()['manifest']
+    (executor.work/'failure.txt').write_text(content)
+    inputs['stage']=dict(stage_id='synthetic-stage',revision=1,state_version=4,candidate={'head_sha':inputs['workspace']['base_sha']})
+    executor.run(['add','--all'])
+    inputs['stage']['candidate']['tree_sha']=executor.run(['write-tree'])
+    result=executor.verify(heartbeat=lambda:True)
+    assert not result['passed'] and expected in result['text']
+    if content.startswith('ghp_'):assert content not in result['text']

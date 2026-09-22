@@ -220,3 +220,39 @@ def test_policy_fence_keeps_signed_result_observable_without_advancing(world,mon
         assert s.get(Execution,launch['attempt_id']).receipt_digest is not None
         assert s.get(DevelopmentWorkflow,rid).phase=='clarify'
         assert s.get(DevelopmentWorkflow,rid).status=='blocked'
+
+
+@pytest.mark.parametrize('operation,old_remote,phase,accepted', [
+    ('amend', None, 'project_routing', True),
+    ('renew', None, 'project_routing', False),
+    ('amend', 'synthetic/repo', 'project_routing', False),
+    ('amend', None, 'research', False),
+])
+def test_remote_first_attachment_requires_phone_amend_before_routing(world, operation, old_remote, phase, accepted):
+    from personal_agent_dal.storage.timeline_models import DevelopmentProjectTemplate as Template
+    from personal_agent_dal.timeline.authorization_contracts import ProjectTemplate
+    r, service, rid, payload = setup_case(world)
+    with r.sessions() as s:
+        row = s.scalar(select(Template))
+        value = r._open(Template, row.template_id, 'sealed_template', row.sealed_template)
+    value.update(revision=2, remote_repository=old_remote, allowed_actions=['read', 'write'])
+    service.register_template(ProjectTemplate(**value), actor='operator', observed_at=r.now(), expires_at=r.now()+timedelta(hours=1), evidence_digest='e'*64)
+    state = service.read(rid, subject='device:synthetic')
+    payload.update(template_revision=2, template_digest=state['candidates'][0]['template_digest'], expected=state['expected'])
+    original = approve(service, preview(service, payload)['proposal'])
+    value.update(revision=3, remote_repository='synthetic/new-repo', max_budget_seconds=None, max_validity_seconds=None)
+    service.register_template(ProjectTemplate(**value), actor='operator', observed_at=r.now(), expires_at=None, evidence_digest='f'*64)
+    with r.sessions() as s, s.begin():
+        s.get(DevelopmentWorkflow, rid).phase = phase
+    state = service.read(rid, subject='device:synthetic')
+    payload.update(operation=operation, template_revision=3, template_digest=state['candidates'][0]['template_digest'],
+        expected=state['expected'], budget_seconds=None, grant_expires_at=None,
+        expected_grant=dict(id=original['grant_id'], version=1, digest=original['grant_digest']))
+    result = preview(service, payload, 'attach-preview')
+    assert (result['status']=='accepted') is accepted
+    with r.sessions() as s:
+        grant=s.get(DevelopmentProjectAuthorization, original['grant_id'])
+        assert r._open(DevelopmentProjectAuthorization, grant.grant_id, 'sealed_grant', grant.sealed_grant)['remote_repository']==old_remote
+    if accepted:
+        result=approve(service, result['proposal'], 'attach-approve')
+        assert result['authorization_applied'] and result['grant_id']==original['grant_id']
