@@ -209,7 +209,7 @@ class ProjectAuthorizationService:
                     registration_policy=policy).items()):raise ValueError('INVALID_ARGUMENT')
                 if old['remote_repository']!=template.remote_repository:
                     if not (body.operation=='amend' and old['remote_repository'] is None
-                        and template.remote_repository is not None and wf.phase=='project_routing'
+                        and template.remote_repository is not None and wf.phase in ('project_routing','project_selection')
                         and s.get(Binding,wf.workflow_id) is None):raise ValueError('INVALID_ARGUMENT')
                 if not set(old['actions'])<=set(body.requested_actions) or body.operation=='renew' and set(old['actions'])!=set(body.requested_actions):raise ValueError('INVALID_ARGUMENT')
                 if not extends_limit(body.budget_seconds,old['budget_seconds']) or expiry_projection(body.grant_expires_at)<grant.expires_at:raise ValueError('BUDGET_LIMIT_EXCEEDED')
@@ -285,6 +285,8 @@ class ProjectAuthorizationService:
                 binding.grant_version=grant.version
                 data=self.r._open(Binding,wf.workflow_id,'sealed_binding',binding.sealed_binding);data['grant_digest']=grant.digest
                 binding.sealed_binding=self.r._seal(Binding,wf.workflow_id,'sealed_binding',data)
+            reroute=wf.phase=='project_selection' and binding is None
+            invalidated=[]
             if bound['operation']!='create':
                 for step in s.scalars(select(Step).where(Step.workflow_id==wf.workflow_id,Step.status=='prepared')):
                     step.status='retired'
@@ -295,7 +297,11 @@ class ProjectAuthorizationService:
                 wf.version+=1
                 # Rebind pending documents without changing any pause or gate. A
                 # paused workflow still requires explicit recovery before consumption.
+                if reroute:wf.phase='project_routing'
                 for decision in old_decisions:
+                    if reroute and decision.kind=='project_selection':
+                        invalidated.append(decision.decision_id)
+                        continue
                     decision_binding=self.r._open(Decision,decision.decision_id,'sealed_binding',decision.sealed_binding)
                     replacement_id=new_id();expires=now+timedelta(hours=24)
                     decision_binding.update(decision_id=replacement_id,workflow_version=wf.version,
@@ -315,7 +321,7 @@ class ProjectAuthorizationService:
                 if gate.mode=='open' and wf.status=='blocked' and wf.blocker_reason in ('PROJECT_AUTHORIZATION_REQUIRED','EXECUTION_BUDGET_EXHAUSTED'):
                     wf.status='active';wf.blocker_reason=None
             row.status='granted';pending.status='granted';pending.grant_id=grant.grant_id
-            self.r._append_event(s,request,'workflow.authorization_granted',dict(summary='项目授权已记录，正在重新校验执行条件。',proposal_id=row.proposal_id,grant_id=grant.grant_id))
+            self.r._append_event(s,request,'workflow.authorization_granted',dict(summary='项目授权已记录，正在重新校验执行条件。',proposal_id=row.proposal_id,grant_id=grant.grant_id,invalidated_decision_ids=invalidated))
             return dict(status='accepted',reason=None,proposal_id=row.proposal_id,binding_digest=body.binding_digest,
                 scope_digest=bound['scope_digest'],grant_id=grant.grant_id,grant_version=grant.version,grant_digest=grant.digest,
                 operation=bound['operation'],authorization_applied=True,workflow_resumed=wf.status=='active',accepted_at=now.isoformat())

@@ -224,6 +224,8 @@ def test_policy_fence_keeps_signed_result_observable_without_advancing(world,mon
 
 @pytest.mark.parametrize('operation,old_remote,phase,accepted', [
     ('amend', None, 'project_routing', True),
+    ('amend', None, 'project_selection', True),
+    ('renew', None, 'project_selection', False),
     ('renew', None, 'project_routing', False),
     ('amend', 'synthetic/repo', 'project_routing', False),
     ('amend', None, 'research', False),

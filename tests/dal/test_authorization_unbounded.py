@@ -107,3 +107,38 @@ def test_phone_project_choice_is_reused_but_pause_preserved(world,paused):
         s.flush()
         assert (s.get(Binding,rid) is None)==paused
         assert wf.phase==('project_routing' if paused else 'project_registration')
+
+
+@pytest.mark.parametrize('paused',[False,True])
+def test_phone_upgrade_retires_old_project_selection_and_reroutes(world,paused):
+    import hashlib
+    from personal_agent_dal.timeline.projects import catalog
+    from personal_agent_dal.timeline.decisions import DecisionService
+    from personal_agent_dal.timeline.requests import digest
+    from personal_agent_dal.storage.timeline_models import DevelopmentWorkflow as Workflow,DevelopmentGate as Gate,DevelopmentArtifact as Artifact,DevelopmentDecisionRequest as Decision,DevelopmentProjectBinding as Binding
+    r,service,rid,payload=unlimited_case(world)
+    old=approve(service,preview(service,payload)['proposal'])
+    with r.sessions() as s,s.begin():
+        wf=s.get(Workflow,rid);wf.status='active';wf.blocker_reason=None
+        candidates=catalog(r,s,rid);body=dict(kind='project_route',text='Synthetic route',candidates=candidates)
+        s.add(Artifact(artifact_id='route',workflow_id=rid,kind='project_route',revision=1,
+            body_sha256=hashlib.sha256(body['text'].encode()).hexdigest(),sealed_body=r._seal(Artifact,'route','sealed_body',body),
+            source_step_id='step',source_receipt_digest=digest(body)))
+    decision=DecisionService(r).propose(rid,'route',kind='project_selection',candidates=candidates)
+    if paused:
+        with r.sessions() as s,s.begin():
+            s.get(Workflow,rid).status='paused';s.get(Gate,rid).mode='paused'
+    state=service.read(rid,subject='device:synthetic')
+    payload.update(operation='renew',expected=state['expected'],
+        expected_grant=dict(id=old['grant_id'],version=old['grant_version'],digest=old['grant_digest']))
+    proposal=preview(service,payload,'reroute-preview')['proposal']
+    with r.sessions() as s:assert s.get(Workflow,rid).phase=='project_selection'
+    updated=approve(service,proposal,'reroute-approve')
+    assert updated['status']=='accepted'
+    with r.sessions() as s:
+        assert s.get(Workflow,rid).phase=='project_routing'
+        assert s.get(Workflow,rid).status==('paused' if paused else 'active')
+        assert s.get(Gate,rid).mode==('paused' if paused else 'open')
+        assert s.get(Decision,decision['decision_id']).status=='superseded'
+        assert s.scalar(select(Decision).where(Decision.status=='pending')) is None
+        assert s.get(Binding,rid) is None
