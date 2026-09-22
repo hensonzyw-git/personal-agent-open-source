@@ -23,6 +23,23 @@ def unlimited_case(world):
     return r,service,rid,payload
 
 
+def remoteless_case(world):
+    """Unbounded grant whose template carries no remote repository yet."""
+    r,service,rid,payload=setup_case(world)
+    with r.sessions() as s:
+        row=s.scalar(select(Template))
+        value=r._open(Template,row.template_id,'sealed_template',row.sealed_template)
+    # push/pr would force a remote repository in the template contract.
+    value.update(revision=2,remote_repository=None,allowed_actions=['read','write'],
+        max_budget_seconds=None,max_validity_seconds=None)
+    service.register_template(ProjectTemplate.model_validate(value),actor='operator',observed_at=r.now(),
+        expires_at=r.now()+timedelta(hours=23),evidence_digest='e'*64)
+    state=service.read(rid,subject='device:synthetic')
+    payload.update(template_revision=2,template_digest=state['candidates'][0]['template_digest'],
+        budget_seconds=None,grant_expires_at=None,expected=state['expected'])
+    return r,service,rid,payload
+
+
 def test_unbounded_grant_has_null_scope_not_fake_display_date(world):
     r,service,rid,payload=unlimited_case(world)
     proposal=preview(service,payload)['proposal']
@@ -109,6 +126,15 @@ def test_phone_project_choice_is_reused_but_pause_preserved(world,paused):
         assert wf.phase==('project_routing' if paused else 'project_registration')
 
 
+def granted_invalidation_event(r,rid):
+    from personal_agent_dal.storage.timeline_models import DevelopmentEvent as Event,DevelopmentRequest as Request
+    with r.sessions() as s:
+        request=s.scalar(select(Request).where(Request.request_id==rid))
+        events=list(s.scalars(select(Event).where(Event.kind=='workflow.authorization_granted').order_by(Event.seq)))
+        assert events
+        return r._open(Event,events[-1].event_id,'sealed_body',events[-1].sealed_body)
+
+
 @pytest.mark.parametrize('paused',[False,True])
 def test_phone_upgrade_retires_old_project_selection_and_reroutes(world,paused):
     import hashlib
@@ -135,6 +161,7 @@ def test_phone_upgrade_retires_old_project_selection_and_reroutes(world,paused):
     with r.sessions() as s:assert s.get(Workflow,rid).phase=='project_selection'
     updated=approve(service,proposal,'reroute-approve')
     assert updated['status']=='accepted'
+    assert granted_invalidation_event(r,rid)['invalidated_decision_ids']==[decision['decision_id']]
     with r.sessions() as s:
         assert s.get(Workflow,rid).phase=='project_routing'
         assert s.get(Workflow,rid).status==('paused' if paused else 'active')
@@ -142,3 +169,92 @@ def test_phone_upgrade_retires_old_project_selection_and_reroutes(world,paused):
         assert s.get(Decision,decision['decision_id']).status=='superseded'
         assert s.scalar(select(Decision).where(Decision.status=='pending')) is None
         assert s.get(Binding,rid) is None
+
+
+@pytest.mark.parametrize('paused',[False,True])
+def test_phone_remote_attachment_amend_retires_selection_and_reroutes(world,paused):
+    """First remote attachment from project_selection without a Binding, end to end."""
+    import hashlib
+    from personal_agent_dal.timeline.projects import catalog
+    from personal_agent_dal.timeline.decisions import DecisionService
+    from personal_agent_dal.timeline.requests import digest
+    from personal_agent_dal.storage.timeline_models import (DevelopmentWorkflow as Workflow,DevelopmentGate as Gate,
+        DevelopmentArtifact as Artifact,DevelopmentDecisionRequest as Decision,DevelopmentProjectBinding as Binding,
+        DevelopmentProjectAuthorization as Grant)
+    r,service,rid,payload=remoteless_case(world)
+    old=approve(service,preview(service,payload)['proposal'])
+    with r.sessions() as s,s.begin():
+        wf=s.get(Workflow,rid);wf.status='active';wf.blocker_reason=None
+        candidates=catalog(r,s,rid);body=dict(kind='project_route',text='Synthetic route',candidates=candidates)
+        s.add(Artifact(artifact_id='route',workflow_id=rid,kind='project_route',revision=1,
+            body_sha256=hashlib.sha256(body['text'].encode()).hexdigest(),sealed_body=r._seal(Artifact,'route','sealed_body',body),
+            source_step_id='step',source_receipt_digest=digest(body)))
+    decision=DecisionService(r).propose(rid,'route',kind='project_selection',candidates=candidates)
+    if paused:
+        with r.sessions() as s,s.begin():
+            s.get(Workflow,rid).status='paused';s.get(Gate,rid).mode='paused'
+    with r.sessions() as s:
+        row=s.scalar(select(Template).where(Template.active==1))
+        value=r._open(Template,row.template_id,'sealed_template',row.sealed_template)
+    value.update(revision=3,remote_repository='synthetic/new-repo')
+    service.register_template(ProjectTemplate.model_validate(value),actor='operator',observed_at=r.now(),
+        expires_at=None,evidence_digest='f'*64)
+    state=service.read(rid,subject='device:synthetic')
+    payload.update(operation='amend',requested_actions=['read','write'],template_revision=3,
+        template_digest=state['candidates'][0]['template_digest'],expected=state['expected'],
+        expected_grant=dict(id=old['grant_id'],version=old['grant_version'],digest=old['grant_digest']))
+    proposal=preview(service,payload,'attach-preview')['proposal']
+    with r.sessions() as s:assert s.get(Workflow,rid).phase=='project_selection'
+    updated=approve(service,proposal,'attach-approve')
+    assert updated['status']=='accepted' and updated['grant_id']==old['grant_id']
+    assert granted_invalidation_event(r,rid)['invalidated_decision_ids']==[decision['decision_id']]
+    with r.sessions() as s:
+        assert s.get(Workflow,rid).phase=='project_routing'
+        assert s.get(Workflow,rid).status==('paused' if paused else 'active')
+        assert s.get(Gate,rid).mode==('paused' if paused else 'open')
+        assert s.get(Decision,decision['decision_id']).status=='superseded'
+        assert s.scalar(select(Decision).where(Decision.status=='pending')) is None
+        assert s.get(Binding,rid) is None
+        grant=s.get(Grant,old['grant_id'])
+        assert r._open(Grant,grant.grant_id,'sealed_grant',grant.sealed_grant)['remote_repository']=='synthetic/new-repo'
+
+
+@pytest.mark.parametrize('operation,phase',[('amend','project_selection'),('renew','project_selection'),
+    ('amend','project_registration')])
+def test_bound_workflow_refuses_remote_attachment(world,operation,phase):
+    """A live Binding blocks the reroute guard, so first attachment must be refused."""
+    import hashlib
+    from personal_agent_dal.timeline.projects import catalog,bind_phone_choice
+    from personal_agent_dal.timeline.decisions import DecisionService
+    from personal_agent_dal.timeline.requests import digest
+    from personal_agent_dal.storage.timeline_models import (DevelopmentWorkflow as Workflow,
+        DevelopmentArtifact as Artifact,DevelopmentDecisionRequest as Decision,DevelopmentProjectBinding as Binding)
+    r,service,rid,payload=remoteless_case(world)
+    old=approve(service,preview(service,payload)['proposal'])
+    with r.sessions() as s,s.begin():
+        wf=s.get(Workflow,rid);wf.status='active';wf.blocker_reason=None
+        candidates=catalog(r,s,rid);body=dict(kind='project_route',text='Synthetic route',candidates=candidates)
+        s.add(Artifact(artifact_id='route',workflow_id=rid,kind='project_route',revision=1,
+            body_sha256=hashlib.sha256(body['text'].encode()).hexdigest(),sealed_body=r._seal(Artifact,'route','sealed_body',body),
+            source_step_id='step',source_receipt_digest=digest(body)))
+    decision=DecisionService(r).propose(rid,'route',kind='project_selection',candidates=candidates)
+    with r.sessions() as s,s.begin():
+        wf=s.get(Workflow,rid)
+        assert bind_phone_choice(r,s,wf,'route',catalog(r,s,rid)) is True
+        wf.phase=phase
+    with r.sessions() as s:
+        row=s.scalar(select(Template).where(Template.active==1))
+        value=r._open(Template,row.template_id,'sealed_template',row.sealed_template)
+    value.update(revision=3,remote_repository='synthetic/new-repo')
+    service.register_template(ProjectTemplate.model_validate(value),actor='operator',observed_at=r.now(),
+        expires_at=None,evidence_digest='f'*64)
+    state=service.read(rid,subject='device:synthetic')
+    payload.update(operation=operation,requested_actions=['read','write'],template_revision=3,
+        template_digest=state['candidates'][0]['template_digest'],expected=state['expected'],
+        expected_grant=dict(id=old['grant_id'],version=old['grant_version'],digest=old['grant_digest']))
+    result=preview(service,payload,'bound-attach-preview')
+    assert result['status']=='refused' and result['reason']=='INVALID_ARGUMENT'
+    with r.sessions() as s:
+        wf=s.get(Workflow,rid)
+        assert wf.phase==phase and s.get(Binding,rid) is not None
+        assert s.get(Decision,decision['decision_id']).status=='pending'

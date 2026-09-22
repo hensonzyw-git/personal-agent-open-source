@@ -783,3 +783,61 @@ def test_blocker_explanation_does_not_admit_dal_actions(engine,token_ring,keyrin
     with deps.session_factory() as s:
         assert list(s.scalars(select(DalTimelineCommand)))==[]
         assert list(s.scalars(select(ConversationEvent).where(ConversationEvent.event_type=='development_update')))==[]
+
+
+def test_phone_side_invalidation_on_remote_attachment_amend(bridge_world):
+    """workflow.authorization_granted invalidation refs retire the phone card."""
+    import hashlib
+    from types import SimpleNamespace
+    from personal_agent.api.dal_timeline_events import TimelineProjector
+    from personal_agent.context.session_manager import SessionManager
+    from personal_agent.context.config import default_context_config
+    from personal_agent.api.dal_contexts import delivered, pending
+    from personal_agent.api import events
+    from personal_agent.storage.models import ConversationEvent, DalDecisionState, DalContextBinding
+    from tests.dal.test_authorization_unbounded import remoteless_case
+    from tests.dal.test_phone_authorization import preview, approve
+    from personal_agent_dal.timeline.authorization_contracts import ProjectTemplate
+    from personal_agent_dal.timeline.projects import catalog
+    from personal_agent_dal.timeline.decisions import DecisionService
+    from personal_agent_dal.timeline.requests import digest
+    from personal_agent_dal.storage.timeline_models import (DevelopmentProjectTemplate as Template,
+        DevelopmentWorkflow as Workflow, DevelopmentArtifact as Artifact)
+    bridge,auth,_,dal,_=bridge_world
+    r,service,rid,payload=remoteless_case((None,None,dal))
+    old=approve(service,preview(service,payload)['proposal'])
+    with r.sessions() as s,s.begin():
+        wf=s.get(Workflow,rid);wf.status='active';wf.blocker_reason=None
+        candidates=catalog(r,s,rid);body=dict(kind='project_route',text='Synthetic route',candidates=candidates)
+        s.add(Artifact(artifact_id='route',workflow_id=rid,kind='project_route',revision=1,
+            body_sha256=hashlib.sha256(body['text'].encode()).hexdigest(),sealed_body=r._seal(Artifact,'route','sealed_body',body),
+            source_step_id='step',source_receipt_digest=digest(body)))
+    decision=DecisionService(r).propose(rid,'route',kind='project_selection',candidates=candidates)
+    projector=TimelineProjector(bridge,SessionManager(default_context_config()))
+    projector.sync()
+    with bridge.sessions() as s,s.begin():
+        state=s.get(DalDecisionState,decision['decision_id'])
+        assert state is not None and state.status=='pending'
+        row=s.get(ConversationEvent,state.event_id)
+        entries=[SimpleNamespace(event_type='development_update',event_id=state.event_id,
+            content=events._entry(bridge.keyring,row).content)]
+        delivered(s,bridge,auth,entries)
+    assert [c['decision_id'] for c in pending(bridge,auth)]==[decision['decision_id']]
+    with r.sessions() as s:
+        trow=s.scalar(select(Template).where(Template.active==1))
+        value=r._open(Template,trow.template_id,'sealed_template',trow.sealed_template)
+    value.update(revision=3,remote_repository='synthetic/new-repo')
+    service.register_template(ProjectTemplate.model_validate(value),actor='operator',observed_at=r.now(),
+        expires_at=None,evidence_digest='f'*64)
+    state=service.read(rid,subject='device:synthetic')
+    payload.update(operation='amend',requested_actions=['read','write'],template_revision=3,
+        template_digest=state['candidates'][0]['template_digest'],expected=state['expected'],
+        expected_grant=dict(id=old['grant_id'],version=old['grant_version'],digest=old['grant_digest']))
+    updated=approve(service,preview(service,payload,'attach-preview')['proposal'],'attach-approve')
+    assert updated['status']=='accepted'
+    projector.sync()
+    with bridge.sessions() as s:
+        assert s.get(DalDecisionState,decision['decision_id']).status=='superseded'
+        binding=s.scalar(select(DalContextBinding).where(DalContextBinding.decision_id==decision['decision_id']))
+        assert binding is not None and binding.consumed==1
+    assert pending(bridge,auth)==[]
