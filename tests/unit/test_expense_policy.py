@@ -165,14 +165,12 @@ def test_a_trip_tag_forces_the_travel_category() -> None:
 
 
 def test_a_taxi_in_a_trip_context_resolves_to_travel_with_the_destination() -> None:
-    """fictional trip-context case: `示例城打车 27.3 家庭支出` reached the ledger as
-    category 出行 with no tag, because the model reasoned that the trip_tag
-    rule "is specifically for travel items". The server contract is that a
-    destination extracted from trip-context transport resolves exactly like
-    any other destination: the ledger's existing root is reused, the stored
-    name carries the tag, and the category becomes 旅行.
+    """A fictional trip-context taxi case must reuse the destination root.
+
+    The ledger keeps the taxi action name, adds the trip tag, and stores the
+    expense under the travel category.
     """
-    rows = [row("机票 #示例城"), row("海鸥食物 #示例城", record_id="rec2")]
+    rows = [row("机票 #示例城"), row("示例商品 #示例城", record_id="rec2")]
     # The MCP write path passes the model's `trip_tag` argument as
     # `destination=`: only the ledger decides which trip it names.
     resolved = resolve(
