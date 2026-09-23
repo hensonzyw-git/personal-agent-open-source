@@ -143,6 +143,21 @@ def test_public_dataset_has_no_private_reviewed_claims() -> None:
     assert verify_provenance(CASES) == []
 
 
+@pytest.mark.parametrize(
+    "origin_tag",
+    ["from_live_defect_example", "from-real-user", "线上缺陷复现"],
+)
+def test_synthetic_case_rejects_real_origin_tag(origin_tag: str) -> None:
+    synthetic = next(c for c in CASES if c.id.startswith("PUB-EXP-"))
+    tagged = EvalCase(
+        **{**synthetic.model_dump(), "tags": (*synthetic.tags, origin_tag)}
+    )
+    assert any(
+        "synthetic case has a live or user provenance tag" in problem
+        for problem in verify_provenance([tagged])
+    )
+
+
 def _test_only_reviewed_witness() -> tuple[EvalCase, dict[str, str]]:
     synthetic = next(c for c in CASES if c.id.startswith("PUB-EXP-"))
     witness = EvalCase(

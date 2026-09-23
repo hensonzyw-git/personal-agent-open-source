@@ -17,7 +17,7 @@
 # only the Base identifiers. The credentials are therefore never duplicated into
 # a second file.
 #
-# Usage (as deploy):
+# Usage (as the configured deploy user):
 #   sudo bash ~/personal-agent-deploy/verify-annual-ledger.sh check
 #   sudo bash ~/personal-agent-deploy/verify-annual-ledger.sh freeze
 #   sudo bash ~/personal-agent-deploy/verify-annual-ledger.sh schema

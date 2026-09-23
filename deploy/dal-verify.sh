@@ -9,7 +9,7 @@
 #   - loopback-only listener on 8820 (no non-loopback bind)
 #   - the DAL data dir is 0700 dal:dal and its files 0600 dal:dal
 #   - the DAL env/key files are root:dal 0640 and READABLE by the service
-#     user (positive control) but NOT by deploy, NOT by the Finance
+#     user (positive control) but NOT by the deploy user, NOT by the Finance
 #     API user, and NOT by the backup user
 #   - the Finance boundaries are untouched: personal-agent-dal cannot read
 #     /var/lib/personal-agent-api or /etc/personal-agent/api.env, and
@@ -47,7 +47,8 @@ internal_ingress_blocked() {
 DAL_USER=personal-agent-dal
 API_USER=personal-agent-api
 BACKUP_USER=personal-agent-backup
-DEPLOY_USER=deploy
+DEPLOY_USER="${DEPLOY_USER:-deploy}"
+check "deploy user exists" id "$DEPLOY_USER"
 DAL_DATA=/var/lib/personal-agent-dal
 DAL_ENV=/etc/personal-agent/dal.env
 DAL_ENV_D=/etc/personal-agent/dal.env.d
@@ -113,9 +114,9 @@ for f in "$DAL_ENV" "$DAL_ENV_D/service-key" "$DAL_ENV_D/enrollment-secret"; do
     sudo -u "$DAL_USER" test -r "$f"
   # Negative: the deploy user, the Finance API user and the backup user cannot.
   if sudo -u "$DEPLOY_USER" test -r "$f" 2>/dev/null; then
-    fail "deploy CAN read $(basename "$f")"
+    fail "$DEPLOY_USER CAN read $(basename "$f")"
   else
-    pass "deploy cannot read $(basename "$f")"
+    pass "$DEPLOY_USER cannot read $(basename "$f")"
   fi
   if sudo -u "$API_USER" test -r "$f" 2>/dev/null; then
     fail "$API_USER CAN read $(basename "$f")"

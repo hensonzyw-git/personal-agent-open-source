@@ -4,11 +4,11 @@
 # environment. Lives on the ECS at /opt/personal-agent/operator-cli.sh.
 #
 # The data directory is personal-agent-api:personal-agent-api mode 0700, so an
-# operator running as deploy has no path to the database at all — every
+# operator running as the deploy user has no path to the database at all — every
 # operator command goes through this wrapper, which is also what keeps the
 # audit trail honest about which identity touched the database.
 #
-# Usage (as deploy):
+# Usage (as the configured deploy user):
 #   /opt/personal-agent/operator-cli.sh personal-agent-device \
 #     --database /var/lib/personal-agent-api/agent.sqlite list
 #   /opt/personal-agent/operator-cli.sh personal-agent-device \

@@ -27,11 +27,13 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import subprocess
 import sys
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -58,7 +60,19 @@ TRANSPORT_ATTEMPTS = 3
 #: action to happen *between* two client calls with a live token in hand, and a
 #: human pause makes the interval unbounded, which turns "revocation took
 #: effect" into "the token might simply have expired".
-SSH = ["ssh", "-i", "~/.ssh/personal_agent_example_key", "deploy@192.0.2.10"]
+
+def _ssh_argv() -> list[str]:
+    host = os.environ.get("ECS_HOST")
+    key = os.environ.get("ECS_SSH_KEY")
+    deploy_user = os.environ.get("DEPLOY_USER", "deploy")
+    if not host or not key:
+        raise SystemExit("Set ECS_HOST and ECS_SSH_KEY before running a live probe")
+    key_path = Path(key).expanduser()
+    if "@" in host or not key_path.is_file():
+        raise SystemExit("ECS_HOST must omit the user; ECS_SSH_KEY must exist")
+    return ["ssh", "-i", str(key_path), f"{deploy_user}@{host}"]
+
+
 OPERATOR = (
     "/opt/personal-agent/operator-cli.sh personal-agent-device "
     "--database /var/lib/personal-agent-api/agent.sqlite"
@@ -443,7 +457,7 @@ def probe_wrong_audience(device: ProbeDevice, args) -> int:
 
 def _switch(action: str, reason: str) -> str:
     """Flip the deployed kill switch over SSH, as the operator would."""
-    argv = [part.replace("~", str(__import__("pathlib").Path.home())) for part in SSH]
+    argv = _ssh_argv()
     command = (
         "sudo /opt/personal-agent/.venv/bin/personal-agent-write-switch "
         "--path /etc/personal-agent/write-switch.json "
@@ -536,7 +550,7 @@ def _remote(command: str, attempts: int = 3) -> str:
     former is retried, and only that one raises `RemoteUnreachable`: retrying a
     command that genuinely failed would turn one server fact into three.
     """
-    argv = [part.replace("~", str(__import__("pathlib").Path.home())) for part in SSH]
+    argv = _ssh_argv()
     for attempt in range(1, attempts + 1):
         result = subprocess.run(
             [*argv, command], capture_output=True, text=True, timeout=180

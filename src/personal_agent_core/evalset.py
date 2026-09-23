@@ -65,6 +65,20 @@ PRIOR_OPERATION_STATES: Final[frozenset[PriorOperationState]] = frozenset(
 #: inject a synthetic witness registry to exercise the same verifier.
 REVIEWED_CASE_DIGESTS: Final[dict[str, str]] = {}
 
+# A synthetic label cannot coexist with tags claiming a real or private origin.
+# This catches contradictory provenance metadata; it cannot prove the text was
+# invented, so publication still needs a separate human review.
+_NON_SYNTHETIC_ORIGIN_TOKENS: Final[frozenset[str]] = frozenset(
+    {"live", "prod", "production", "real", "private", "user", "reviewed", "redacted"}
+)
+
+
+def _claims_non_synthetic_origin(tag: str) -> bool:
+    parts = set(tag.casefold().replace("-", "_").split("_"))
+    return bool(parts & _NON_SYNTHETIC_ORIGIN_TOKENS) or any(
+        marker in tag for marker in ("线上", "真实", "用户提供")
+    )
+
 
 #: Which capability a case measures. Scores must never be pooled across these:
 #: the acceptance for `DEV-037` is that Finance, authorisation and MCP are
@@ -212,7 +226,7 @@ def verify_provenance(
     cases: list[EvalCase], *, complete: bool = True,
     reviewed_case_digests: Mapping[str, str] | None = None
 ) -> list[str]:
-    """Reject unregistered reviewed claims and changed pinned semantics.
+    """Reject contradictory origin claims and changed pinned semantics.
 
     The production public registry is empty. A test-only registry lets
     adversarial tests exercise the full positive and mutation paths without
@@ -238,6 +252,12 @@ def verify_provenance(
                 "user_provided_redacted label"
             )
     for case in cases:
+        if case.source_type == "synthetic" and any(
+            _claims_non_synthetic_origin(tag) for tag in case.tags
+        ):
+            problems.append(
+                f"{case.id}: synthetic case has a live or user provenance tag"
+            )
         pinned = registry.get(case.id)
         if pinned is None:
             continue

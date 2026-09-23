@@ -19,7 +19,11 @@ fi
 UNIT_SRC="$(cd "$(dirname "$0")" && pwd)/systemd"
 API_USER=personal-agent-api
 MCP_USER=personal-data-mcp
-DEPLOY_USER=deploy
+DEPLOY_USER="${DEPLOY_USER:-deploy}"
+if ! id "$DEPLOY_USER" >/dev/null 2>&1; then
+  echo "deploy user $DEPLOY_USER does not exist; set DEPLOY_USER explicitly" >&2
+  exit 1
+fi
 
 # --- system users (no home, no shell, no password) ---------------------------
 for user in "$API_USER" "$MCP_USER"; do

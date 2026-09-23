@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DAL-R08: the production operator-token issuing channel. Runs ON the ECS as
-# deploy and writes the token to a 0600 file in the invoking user's home
+# the configured deploy user and writes the token to a 0600 file in that user's home
 # (never stdout, never a log — the token is returned exactly once by design).
 #
 # This closes the R08 carry-over "production operator-token issuing channel":
@@ -18,7 +18,7 @@
 set -euo pipefail
 
 if [ "$(id -u)" -eq 0 ]; then
-  echo "run as deploy, not root (sudo is used only for reading key files)" >&2
+  echo "run as the configured deploy user, not root (sudo only reads key files)" >&2
   exit 1
 fi
 

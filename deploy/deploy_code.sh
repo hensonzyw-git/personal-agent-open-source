@@ -6,8 +6,9 @@
 # repo pins — no dependency resolution happens on the server and no GitHub
 # credential ever leaves the Mac.
 #
-# Usage:  bash deploy/deploy_code.sh
-# Requires: ssh -i ~/.ssh/personal_agent_example_key deploy@192.0.2.10 working.
+# Usage: ECS_HOST=192.0.2.10 ECS_SSH_KEY=/path/to/key \
+#        DEPLOY_USER=deploy bash deploy/deploy_code.sh
+# Requires an explicitly configured host and SSH key.
 #
 # It does NOT restart the services: the runbook (deploy/README.md) owns the
 # order of migrations and restarts, and a code push that silently restarted a
@@ -15,9 +16,16 @@
 
 set -euo pipefail
 
-ECS_HOST=deploy@192.0.2.10
-ECS_SSH=(ssh -i ~/.ssh/personal_agent_example_key "$ECS_HOST")
-ECS_SCP=(scp -i ~/.ssh/personal_agent_example_key)
+: "${ECS_HOST:?Set ECS_HOST to the server hostname or IP address}"
+: "${ECS_SSH_KEY:?Set ECS_SSH_KEY to the SSH private key path}"
+DEPLOY_USER="${DEPLOY_USER:-deploy}"
+if [[ "$ECS_HOST" == *@* ]] || [ ! -f "$ECS_SSH_KEY" ]; then
+  echo "ECS_HOST must omit the user, and ECS_SSH_KEY must name an existing file" >&2
+  exit 2
+fi
+ECS_TARGET="${DEPLOY_USER}@${ECS_HOST}"
+ECS_SSH=(ssh -i "$ECS_SSH_KEY" "$ECS_TARGET")
+ECS_SCP=(scp -i "$ECS_SSH_KEY")
 REMOTE=/opt/personal-agent
 
 # PyPI is unreliable from a mainland ECS; default to the Aliyun mirror.
@@ -35,8 +43,8 @@ WHEEL="$(ls dist/personal_agent-*.whl | head -1)"
 echo "built $WHEEL and dist/requirements.txt"
 
 "${ECS_SSH[@]}" "mkdir -p $REMOTE/releases"
-"${ECS_SCP[@]}" "$WHEEL" dist/requirements.txt "$ECS_HOST:$REMOTE/releases/"
-"${ECS_SCP[@]}" deploy/operator-cli.sh "$ECS_HOST:$REMOTE/operator-cli.sh"
+"${ECS_SCP[@]}" "$WHEEL" dist/requirements.txt "$ECS_TARGET:$REMOTE/releases/"
+"${ECS_SCP[@]}" deploy/operator-cli.sh "$ECS_TARGET:$REMOTE/operator-cli.sh"
 "${ECS_SSH[@]}" "chmod 0755 $REMOTE/operator-cli.sh"
 
 "${ECS_SSH[@]}" bash -s <<EOF
@@ -55,6 +63,6 @@ echo "installed: \$(.venv/bin/pip show personal-agent | head -2 | tail -1)"
 EOF
 
 echo
-echo "Deployed to $ECS_HOST:$REMOTE (services NOT restarted)."
+echo "Deployed to $ECS_TARGET:$REMOTE (services NOT restarted)."
 echo "First rollout: continue with deploy/README.md step 7 (migrations, enable)."
 echo "Upgrade: sudo systemctl restart personal-data-mcp personal-agent-api"
