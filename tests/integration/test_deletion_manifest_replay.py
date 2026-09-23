@@ -131,8 +131,9 @@ def _conversation_count(engine) -> int:
 
 def test_export_carries_sealed_ids_not_plaintext(tmp_path: Path, keyring: KeyRing) -> None:
     path = tmp_path / "agent.sqlite"
+    plaintext_canary = "plaintext-conversation-id-canary-2026-09-23"
     engine = _seed_database(path, keyring, conversations=["c1", "c2"])
-    _add_manifest_entry(engine, keyring, entry_id="m1", object_id="c1")
+    _add_manifest_entry(engine, keyring, entry_id="m1", object_id=plaintext_canary)
 
     with session_factory(engine)() as session:
         exported = export_manifest(session)
@@ -144,7 +145,7 @@ def test_export_carries_sealed_ids_not_plaintext(tmp_path: Path, keyring: KeyRin
     # The sealed envelope is a dict with the AEAD shape, never a plaintext id.
     assert isinstance(entry["encrypted_object_id"], dict)
     assert "ciphertext" in entry["encrypted_object_id"]
-    assert "c1" not in json.dumps(entry)
+    assert plaintext_canary not in json.dumps(entry)
 
 
 def test_replay_deletes_a_restored_conversation(tmp_path: Path, keyring: KeyRing) -> None:
