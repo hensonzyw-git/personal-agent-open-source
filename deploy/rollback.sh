@@ -54,6 +54,6 @@ echo "  backup staging/cache: /var/backups/personal-agent, /var/cache/restic"
 echo "  env/keys: /etc/personal-agent"
 echo "  code:  /opt/personal-agent"
 
-SITE_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://zhuyawei.com)"
-echo "personal site check: https://zhuyawei.com -> $SITE_CODE"
+SITE_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://example.invalid)"
+echo "personal site check: https://example.invalid -> $SITE_CODE"
 [ "$SITE_CODE" = "200" ] || exit 1

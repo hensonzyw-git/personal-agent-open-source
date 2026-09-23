@@ -73,4 +73,3 @@ struct ReviewPendingCountTests {
         #expect(ReviewPendingCount.count(items, today: "2026-08-12") == 0)
     }
 }
-

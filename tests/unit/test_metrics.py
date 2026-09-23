@@ -25,8 +25,8 @@ SECRET_SHAPED = [
     "tblSECRETtable01",
     "recABCDEF123456",
     "cli_a1b2c3d4e5f6",
-    "6VWFFJRYG5",
-    "/home/example/private-path's Project/Personal Agent/.env.local",
+    "TESTTEAM01",
+    "/home/example/personal-agent/.env.local",
 ]
 
 

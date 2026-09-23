@@ -1,0 +1,47 @@
+{
+  "_comment": "Synthetic offline reproduction, not a historical provider receipt.",
+  "task": {
+    "goal": "Synthetic query",
+    "source_refs": [
+      "synthetic-user"
+    ],
+    "constraints": [
+      {
+        "key": "date_range",
+        "value": {
+          "start": "2026-01-01",
+          "end": "2026-01-31"
+        },
+        "source_refs": [
+          "synthetic-user"
+        ]
+      },
+      {
+        "key": "is_family_expense",
+        "value": false,
+        "source_refs": [
+          "synthetic-user"
+        ]
+      },
+      {
+        "key": "view",
+        "value": "total",
+        "source_refs": [
+          "synthetic-user"
+        ]
+      }
+    ]
+  },
+  "evidence": {
+    "query_result": {
+      "filters_applied": {
+        "date_range": {
+          "start": "2026-01-01",
+          "end": "2026-01-31"
+        },
+        "is_family_expense": "false"
+      },
+      "view": "total"
+    }
+  }
+}

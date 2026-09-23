@@ -26,7 +26,7 @@ tools-bearing text-only baseline, the `prompt_tokens` delta cannot be
 attributed to the image.
 
 Run:
-    /home/example/private-path's Project/Personal Agent/.venv/bin/python \
+    .venv/bin/python \
         scripts/spike_multimodal_live.py
 """
 

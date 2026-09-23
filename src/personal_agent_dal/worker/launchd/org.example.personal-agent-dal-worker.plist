@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template for the Home Mac Worker one-shot poll (DAL-017).
+
+  NOT installed automatically: Henson must review the absolute paths, place the
+  file at ~/Library/LaunchAgents/org.example.personal-agent-dal-worker.plist,
+  and load it with `launchctl load` himself. The worker runs as the existing
+  login user (no dedicated system account); untrusted repo toolchains are still
+  sandboxed per-stage, but the supervisor poll process itself is the login user.
+
+  Placeholders to replace before use:
+    __WORKTREE_ROOT__   absolute path to this checkout (uv run resolves here)
+    __CONFIG_PATH__     absolute path to the worker config JSON
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>org.example.personal-agent-dal-worker</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/uv</string>
+        <string>run</string>
+        <string>--project</string>
+        <string>__WORKTREE_ROOT__</string>
+        <string>personal-agent-dal-worker</string>
+        <string>--config</string>
+        <string>__CONFIG_PATH__</string>
+        <string>poll-once</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__WORKTREE_ROOT__</string>
+
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>__WORKTREE_ROOT__/.worker-poll.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__WORKTREE_ROOT__/.worker-poll.stderr.log</string>
+</dict>
+</plist>

@@ -34,7 +34,7 @@ WARN_DAYS=14
 # The names the iPhone app and the personal site actually depend on. A
 # certificate that is fresh on disk but not being served is the whole reason
 # this list exists.
-SERVED_NAMES=(agent.example.invalid zhuyawei.com)
+SERVED_NAMES=(agent.example.invalid example.invalid)
 
 now=$(date +%s)
 alarms=0

@@ -8,7 +8,7 @@ so the run cannot silently target the wrong provider.
 Usage (from the worktree root):
 
     PYTHONPATH=src .venv/bin/python scripts/run_trv005_eval.py \
-        --dataset evals/finance_v0.2.jsonl --case TRV-005 \
+        --dataset evals/finance_public_synthetic_v1.jsonl --case TRV-005 \
         --out evals/results/<name>.jsonl
 """
 

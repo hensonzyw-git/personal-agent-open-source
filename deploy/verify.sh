@@ -648,11 +648,11 @@ expect_success "operator-cli.sh runs personal-agent-device list" \
   --database /var/lib/personal-agent-api/agent.sqlite list
 
 echo "== personal site regression =="
-SITE_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://zhuyawei.com)"
+SITE_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://example.invalid)"
 if [ "$SITE_CODE" = "200" ]; then
-  pass "https://zhuyawei.com -> 200"
+  pass "https://example.invalid -> 200"
 else
-  fail "https://zhuyawei.com -> $SITE_CODE, want 200"
+  fail "https://example.invalid -> $SITE_CODE, want 200"
 fi
 
 echo

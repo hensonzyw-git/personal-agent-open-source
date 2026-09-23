@@ -84,11 +84,13 @@ def test_readonly_prompt_matches_admitted_catalog(engine,token_ring,keyring):
 def test_original_view_constraint_is_still_rejected():
     from personal_agent.runtime.task_contracts import validate_evidence_scope
     from personal_agent.runtime.answers import AnswerError
-    data=json.loads((Path(__file__).resolve().parents[2]/'docs/evidence/adk_supplement_live_20260914.json').read_text())
-    row=next(r for r in data['rows'] if r['case']=='analysis' and r['repeat']==3)
-    metadata=json.loads(row['trace'][0]['tool_calls'][0][0]['function']['arguments'])['task']
+    # Synthetic reproduction: recognized constraints match, but view is not
+    # an admitted scope constraint. No private live trace is distributed.
+    data=json.loads((Path(__file__).resolve().parents[1]/'fixtures/adk_view_scope.synthetic.json').read_text())
+    metadata=data['task']
+    evidence=data['evidence']
     with pytest.raises(AnswerError,match='evidence_scope_mismatch'):
-        validate_evidence_scope(row['response']['result_envelope']['evidence'][0],metadata)
+        validate_evidence_scope(evidence,metadata)
 
 
 def test_batch_only_keeps_expense_rules_without_income_rules():

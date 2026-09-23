@@ -153,7 +153,7 @@ def test_independent_git_metadata_no_shared_objects(tmp_path):
     import subprocess
     from personal_agent_dal.worker.supervisor import provision_repository
     # Explicit test executable pin. No provider and no user's repository read.
-    git=Path('/home/example/private-path').resolve()
+    git=Path(__import__('shutil').which('git')).resolve()
     if not git.exists():pytest.skip('explicit local Git fixture unavailable')
     source=tmp_path/'source';source.mkdir()
     environment={'PATH':str(git.parent)+':/usr/bin:/bin','HOME':str(tmp_path),

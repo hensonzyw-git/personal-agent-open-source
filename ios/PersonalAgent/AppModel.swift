@@ -28,7 +28,7 @@ final class AppModel {
     /// for local runs. A fresh install must default to the real server: a
     /// default of loopback made every real-device enrollment hit the phone's
     /// own lo0 with -1004 and no server-side trace (2026-07-31).
-    var baseURLText: String = "https://agent.example.invalid"
+    var baseURLText: String = ""
     var enrollmentCode: String = ""
     var deviceName: String = defaultDeviceName()
 

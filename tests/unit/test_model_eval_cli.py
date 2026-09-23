@@ -33,7 +33,7 @@ def test_enabled_manifest_tools_are_the_only_eval_catalog() -> None:
 
 
 def test_model_scoring_uses_real_outcomes_not_case_counts() -> None:
-    case = CASES["EXP-019"]
+    case = CASES["PUB-EXP-003"]
     exact = ToolCall(tool=case.expected.tool or "", model_args=case.expected.arguments)
     wrong = ToolCall(
         tool=case.expected.tool or "",
@@ -49,7 +49,7 @@ def test_model_scoring_uses_real_outcomes_not_case_counts() -> None:
 
 
 def test_model_scoring_applies_the_same_receipt_date_default_as_the_host() -> None:
-    case = CASES["EXP-019"]
+    case = CASES["PUB-EXP-003"]
     omitted_date = ToolCall(
         tool=case.expected.tool or "",
         model_args={
@@ -128,7 +128,7 @@ def test_eval_replays_exact_clarification_context() -> None:
         prior_turns=(
             EvalPriorTurn(
                 event_type="user_message",
-                content={"text": "晚饭示例餐馆620"},
+                content={"text": "晚饭示例餐馆60"},
             ),
             EvalPriorTurn(
                 event_type="operation_result",
@@ -150,9 +150,9 @@ def test_eval_replays_exact_clarification_context() -> None:
 
     exact = "\n".join(envelope.texts_of(ComponentKind.CLARIFICATION_CONTEXT))
     raw = "\n".join(envelope.texts_of(ComponentKind.RAW_EVENT))
-    assert "晚饭示例餐馆620" in exact
+    assert "晚饭示例餐馆60" in exact
     assert "这笔是个人支出还是家庭支出？" in exact
-    assert "晚饭示例餐馆620" not in raw
+    assert "晚饭示例餐馆60" not in raw
     assert envelope.texts_of(ComponentKind.PENDING_STATE) == ()
 
 

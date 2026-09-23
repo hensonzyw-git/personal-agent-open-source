@@ -9,7 +9,7 @@
 	  and the Keychain then refuses every call with errSecMissingEntitlement
 	  (-34018) -- which looks exactly like a bug in the credential store. A device
 	  build must NOT use this file: automatic signing supplies the real
-	  `application-identifier` from team 4KKHF67AF3, and a hardcoded one here
+	  `application-identifier` from team TESTTEAM01, and a hardcoded one here
 	  would fight it. The device build uses `PersonalAgent/PersonalAgent.entitlements`
 	  instead; the split is enforced by `CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]`
 	  overriding the plain setting, verified with `-showBuildSettings` per sdk.

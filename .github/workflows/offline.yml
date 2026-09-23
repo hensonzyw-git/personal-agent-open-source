@@ -1,0 +1,45 @@
+name: Offline checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081
+        with:
+          python-version: '3.12'
+          enable-cache: false
+      - run: uv sync --locked --extra adk
+      - run: uv run --no-sync pytest tests/ -q
+        env:
+          GIT_CONFIG_NOSYSTEM: '1'
+          GIT_CONFIG_GLOBAL: /dev/null
+  swift:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - run: swift test --package-path ios/PersonalAgentKit
+  design-gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check scoped design approval
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_BRANCH: ${{ github.head_ref }}
+        run: python3 scripts/check_gate.py --base "$PR_BASE_SHA" --head-ref "$PR_HEAD_SHA" --head "$PR_HEAD_BRANCH"

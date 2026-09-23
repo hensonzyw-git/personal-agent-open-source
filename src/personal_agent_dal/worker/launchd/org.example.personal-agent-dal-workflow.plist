@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Reviewed release placeholders only; this template does not install or enable a job.
+     Replace __RELEASE_ROOT__, __WORKER_CONFIG__ and __WORKFLOW_CONFIG__ with
+     approved absolute paths. Native v3 and deterministic executor admission,
+     matching server registry, private config modes and project grants are required.
+     Stop the legacy poll job before enabling this one; both inventories remain fenced. -->
+<plist version="1.0"><dict>
+    <key>Label</key><string>org.example.personal-agent-dal-workflow</string>
+    <key>ProgramArguments</key><array>
+        <string>__RELEASE_ROOT__/.venv/bin/personal-agent-dal-worker</string>
+        <string>--config</string><string>__WORKER_CONFIG__</string>
+        <string>workflow-poll-once</string>
+        <string>--workflow-config</string><string>__WORKFLOW_CONFIG__</string>
+    </array>
+    <key>WorkingDirectory</key><string>__RELEASE_ROOT__</string>
+    <key>StartInterval</key><integer>15</integer>
+    <key>RunAtLoad</key><false/>
+    <key>Umask</key><integer>63</integer>
+</dict></plist>

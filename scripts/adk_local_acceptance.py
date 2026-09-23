@@ -10,8 +10,8 @@ from pathlib import Path
 import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
-STATE = Path('/home/example/private-path')
-ENV = Path('/home/example/private-path')
+STATE = ROOT / '.adk-acceptance.json'
+ENV = ROOT / '.env.local'
 LIMITS = {'model': 300, 'anysearch': 100}
 EXPIRES = datetime.fromisoformat('2026-09-16T00:00:00+08:00')
 CASES = [

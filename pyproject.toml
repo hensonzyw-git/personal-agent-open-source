@@ -7,6 +7,7 @@ name = "personal-agent"
 version = "0.1.0"
 description = "Henson's single-user Personal Agent backend and Personal Data MCP server"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "mcp>=2,<3",
@@ -83,7 +84,7 @@ packages = [
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
-"evals/finance_v0.2.jsonl" = "personal_agent_core/data/finance_v0.2.jsonl"
+"evals/finance_public_synthetic_v1.jsonl" = "personal_agent_core/data/finance_public_synthetic_v1.jsonl"
 "spec/scoring_policy.yml" = "risk_monitor/scoring/scoring_policy.yml"
 
 # The frozen DAL contract registries ship as real package data under

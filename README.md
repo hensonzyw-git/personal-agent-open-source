@@ -1,126 +1,112 @@
 # Personal Agent
 
-Henson 的个人 Agent 项目：iOS App + 自托管 Agent Backend + Personal Data MCP。
+> 本地开源准备候选，尚未定版或发布。数据公开边界与未完成验证见[验证说明](docs/verification.md)。
 
-PRD v1.0.1、Phase 1 技术方案 v0.1 和开发拆解 v0.1 均已通过评审；Phase 1 已于
-2026-08-07 满足完整开发完成定义，G1–G6 全部通过。当前实现仍是 Finance 单用户闭环：
-iOS 是薄客户端，服务端负责 Agent Runtime、MCP Client、Policy、审计和定时任务；
-Phase 1 Agent 框架为 Google ADK，业务模型通过可替换 adapter 接入。项目当前进入独立的
-Development Agent Loop Wave 0 gate，尚未授权 DAL 实现。
+
+> 本版取自截至 2026-09-23 的固定私人开发基线。历史线上证据与本次公开快照验证分开记录，完整手机开发交付链路尚未在本轮验收。见[验证说明](docs/verification.md)。
+**一个产品经理用 vibe coding 构建的个人 Agent：连接自己的数据，执行受控操作，并探索可审核的自动化开发闭环。**
+
+`Single-user` · `ECS + Mac mini` · `Governed MCP` · `Human-in-the-loop`
+
+> [!IMPORTANT]
+> **本仓库仅公开项目代码与架构，不能直接部署。** 不提供作者的个人数据、凭据、生产配置或完整运行环境，也不是开箱即用的 App／服务发行版。
+
+## 项目从哪里来
+
+我想做的，是一套围绕自己长期使用的 Agent，而不只是一个聊天界面：手机是入口，ECS 是在线中心，个人数据通过受控工具接入，开发能力逐步交给有审批和验证边界的自动化流程。
+
+**项目在 2026 年 7 月已启动，原仓库首个提交为 7 月 23 日，早于 Muse 于 2026 年 9 月 8 日公开发布。** 它不是 Muse 的复刻、移植或开源实现，而是个人项目与大厂应用在“长期服务个人的 Agent”方向上的不谋而合。我的起点是自己的数据与使用需求；Muse 的公开定位是面向广泛用户的个人 Agent 产品。
+
+[项目起源、时间依据与 Muse 对照 →](./docs/overview/origin-and-muse.md)
+
+公开仓库保留了私人开发阶段的真实 Git 提交顺序和原始时间。为保护个人数据与部署信息，历史内容及提交标识经过改写；部分提交因隐私内容移除而变空。[历史保留与脱敏说明 →](./docs/overview/history-and-privacy.md)
+
+## 关于 vibe coding
+
+我是 [Henson](https://zhuyawei.com/)，一名产品经理。这个项目主要借助 AI 编程工具完成：我负责需求、产品与架构取舍、组织评审和验收，代码由 AI 生成并持续迭代。
+
+**代码的冗长性、重复抽象和局部实现复杂度，并不是我目前能够充分控制的部分。** 受限于工程经验，我无法像专业工程团队那样逐行把控所有实现。这不是简洁代码或最佳实践的示范；我希望分享的是产品思考、架构取舍，以及一个真实项目逐步形成的开发方法。欢迎指出具体缺陷和可以简化的地方。
+
+[开发方式、能力边界与验证方法 →](./docs/overview/engineering.md)
+
+## 核心框架
+
+项目有两条相关但独立的链路：
+
+| 链路 | 做什么 |
+| --- | --- |
+| **Personal Agent** | iOS 交互 → ECS 上的 Agent Runtime → 策略校验与 MCP 工具 → 个人业务数据和操作 |
+| **DAL · Development Agent Loop** | 需求 → PRD 审批 → 技术设计 → 编码 → 验证与独立审查 → 交付验收 |
+
+**模型提出行动，系统管理状态与权限，人决定范围和接受结果。** 日常 Agent 不依赖 DAL 才能运行；DAL 的完整自动化链路仍在建设中，交付也不自动等于合并或部署。
+
+```mermaid
+flowchart LR
+    Phone["iPhone<br/>聊天、确认、状态"] --> PA
+    subgraph ECS["ECS 云服务器 · 在线中心"]
+        PA["Personal Agent<br/>API / ADK / Policy / MCP"]
+        DAL["DAL 全局控制面<br/>状态机 / 审批 / 队列 / 审计"]
+        PA -. "手机入口已有实现；完整交付待验收" .-> DAL
+    end
+    Mini["家庭 Mac mini<br/>开发 CLI / worktree / 测试"] -->|"主动出站：领取任务、回报证据"| DAL
+    DAL -->|"受控 GitHub adapter"| GH["GitHub"]
+    PA --> Models["外部模型服务"]
+    Mini --> Models
+    PA --> Data["个人业务数据源"]
+```
+
+**ECS 决定下一步是否允许执行，Mac mini 完成已获准的步骤。** Worker 主动连接 ECS，不需开放家庭公网入口。MacBook 用于人工开发与异常接管，不是另一个全局编排器。上图表示职责分工，不表示所有路径均已验收。
+
+主要技术栈：Swift／iOS、Python／FastAPI、Google ADK、MCP、SQLite／SQLAlchemy，以及受控的开发 CLI 和 Git worktree。
+
+[架构与部署 →](./docs/overview/architecture.md) · [完整开发流程 →](./docs/overview/development-workflow.md) · [状态机与授权 →](./docs/overview/state-and-authorization.md)
 
 ## 当前进度
 
-- Finance MCP、Governed MCP Client、Agent API/ADK composition、daily review、
-  device identity、operator CLI 和 iOS App 均已实现并达到各自证据边界；
-- G4 真实 iPhone rollout、G5 生产单笔写、G6 APNs/daily review 与人工核对恢复路径均已关闭；
-- CAP-001 的 Timeline/Session、长话题自动压缩和有界 Context 已完成实现、迁移、测试与 live 证据；
-- CAP-002–008 记录后续 streaming、voice、memory、routing 和 multimodal 路线，
-  不扩大当前 Finance Phase；
-- Development Agent Loop 的 PRD、技术方案、PM 决策基线和 DAL-001–050 计划已落盘，
-  其架构是 graph-orchestrated loop；DAL-G0-P 已通过，DAL-001–006 合同包的第七轮 findings
-  001–006 已逐项关闭，consolidated historical regression 也已通过；fresh full review
-  `3679f0b` 的 007–011 已在 `50e8c41` 独立关闭；第二次 full review `899c6e5` 又因 manifest
-  authority finding 012 FAIL，012 已在 exact `1b7ca30` 独立关闭；第三次 full review `cdccf09` 又因
-  eval/root-closure/canonical-doc findings 013–015 FAIL，三项已在 exact `1bdbf1a` 独立关闭；最终从零
-  full review 已在 exact `50850de` PASS，receipt
-  `codex-readonly/DAL-G0-E-FINAL/50850de/2026-08-09`；尚无 provider preflight、实现授权或
-  DAL-007+ 自动化实现；
-- 精确测试数、live evidence、已知限制和下一步以
-  [PROJECT_STATUS.md](./PROJECT_STATUS.md) 为准。
+以下区分当前公开源码与历史运行证据；未纳入固定快照的后续私人修复不计入本版。
 
-## 文档
+| 范围 | 状态 |
+| --- | --- |
+| 日常聊天、Finance、会话与上下文管理 | 原单用户环境已有实现和使用／验收记录 |
+| ECS DAL 控制面与 Mac mini Worker | 已有部署；单角色、合成输入的 `report_only` 执行有实测证据 |
+| 手机需求到规划、审查、阶段推进和交付 | 已有手机授权、自动工作流和提交审查实现；**完整交付待验收** |
+| Calendar 与其他个人能力 | Calendar 有实现和隔离验收记录，真实完整链路仍待验证；知识库、长期记忆等按后续路线推进 |
 
-- [当前状态与交接清单](./PROJECT_STATUS.md)
-- [项目协作与开发约定](./AGENTS.md)（与 `CLAUDE.md` 相同）
-- [新 session 启动提示](./docs/新session启动提示.md)
-- [个人 Agent iOS App PRD v1.0.1](./个人Agent_PRD_v1.0.1.md)
-- [PRD v1.0.1 评审结论](./docs/PRD评审结论_2026-07-23.md)
-- [Phase 1 技术方案设计计划](./docs/Phase1技术方案设计计划_v0.1.md)
-- [Phase 1 技术方案 v0.1](./docs/Phase1技术方案_v0.1.md)
-- [Phase 1 技术方案评审结论](./docs/Phase1技术方案评审结论_2026-07-23.md)
-- [Phase 1 开发拆解 v0.1](./docs/Phase1开发拆解_v0.1.md)
-- [Agent 横向能力 PRD v1.0](./docs/Agent横向能力PRD_v1.0.md)
-- [Agent 横向能力技术方案 v1.0](./docs/Agent横向能力技术方案_v1.0.md)
-- [开发 Agent 闭环 PRD v1.0](./docs/开发Agent闭环PRD_v1.0.md)
-- [开发 Agent 闭环技术方案 v1.0](./docs/开发Agent闭环技术方案_v1.0.md)
-- [开发 Agent 闭环开发拆解 v0.1](./docs/开发Agent闭环开发拆解_v0.1.md)
-- [ECS 安全加固实施记录](./ECS安全加固实施记录_2026-07-23.md)
-- [MCP 工具 IR v0.1](./docs/MCP工具IR_v0.1.md)
-- [Agent 框架与 GLM Spike 计划 v0.1](./docs/Agent框架Spike计划_v0.1.md)
-- [Agent 框架与 GLM Spike 初步结果](./docs/Agent框架Spike初步结果_2026-07-23.md)
+[完整能力表与验证边界 →](./docs/overview/capabilities.md)
 
-## 本地运行
+## 接下来做什么
 
-需要 Python 3.12 和 [uv](https://docs.astral.sh/uv/)：
+| 顺序 | 重点 |
+| --- | --- |
+| **近期** | 跑通一项真实开发需求：手机输入、PRD 审批、设计、编码、验证、独立审查与交付验收 |
+| **随后** | 补齐分阶段推进、暂停／续批、ECS 与 Worker 失联恢复；整理模型、角色和执行配置边界 |
+| **长期** | 完成 Calendar 真实闭环，扩展知识库、记忆等个人能力，再让使用反馈进入受控开发流程 |
 
-```bash
-uv sync --all-extras --dev
-uv run pytest -q
-uv run personal-agent-mcp-probe
-uv run personal-agent-framework-probe
-uv run personal-agent-offline-eval
-uv run personal-agent-generate-contracts --check
-uv run personal-agent-eval-lint
-```
+[详细路线图与验收条件 →](./docs/overview/roadmap.md)
 
-这些命令默认不会发起模型请求，也不会写入飞书。
+## 相关博文
 
-`personal-agent-eval-lint` 只验证样本来源与冻结合同，并报告样本分布；它不把样本数量
-冒充模型分数。真实模型评测使用生产同款 Context Builder + ADK/GLM 边界，但仍不会
-执行任何业务工具：
+仓库文档说明系统如何工作；[博客](https://zhuyawei.com/blog/)记录我为什么这样做，以及一路上的取舍和复盘。
 
-```bash
-set -a
-. ./.env.local
-set +a
-uv run personal-agent-model-eval --out /tmp/personal-agent-eval.jsonl
-uv run personal-agent-eval-score --results /tmp/personal-agent-eval.jsonl
-```
+| 阅读角度 | 文章 |
+| --- | --- |
+| 项目起点 | [我为什么决定把业余时间 all in 到一个大项目：Personal Agent](https://zhuyawei.com/blog/all-in-personal-agent/) |
+| 一期复盘 | [用 Vibe Coding 完成 Personal Agent 一期](https://zhuyawei.com/blog/personal-agent-phase-one/) |
+| 架构取舍 | [通用 Harness 开源之后：Personal Agent 还必须自己负责什么？](https://zhuyawei.com/blog/harness-governance-scar-tissue/) |
+| 长期方向 | [我突然发现，Coding Agent 可能只是 Personal Agent 的供应商](https://zhuyawei.com/blog/personal-agent-as-my-os/) |
 
-结果按精确来源标签 × Finance/授权/MCP 分列；每条结果绑定来源标签、输入、上下文与
-expected output 的完整语义摘要，旧结果不能套到修改后的样本上，也不能与另一 evaluator
-的结果混合后冒充一次评测。
+## 深入阅读
 
-如需开始真实 GLM Spike，请先在智谱控制台创建一个新的 Key，再使用交互脚本写入本地、被 Git 忽略且权限为 `600` 的 `.env.local`：
+完整的状态机、授权、租约、恢复协议、模型配置和 Muse 对比已拆入 **[文档目录](./docs/overview/README.md)**，无需先读完全部设计才能理解项目。
 
-```bash
-sh scripts/configure_local_key.sh
-```
+开始读代码：[代码导读](./docs/overview/code-guide.md)。关注异常与隐私：[故障恢复与安全边界](./docs/overview/recovery-and-security.md)。
 
-不要把 Key 粘贴到聊天、Git、命令行参数、测试快照或日志。
+## 参与与许可
 
-在线 eval 会真实消耗模型 API，但仍只调用本地 fixture：
+欢迎围绕产品设计、架构取舍、可复现缺陷和代码简化提出反馈。新功能或权限变化先讨论需求与设计；请勿提交真实个人数据、凭据或生产日志。
 
-```bash
-set -a
-. ./.env.local
-set +a
-uv run personal-agent-online-eval --framework adk --case-id FIN-021
-uv run personal-agent-online-eval --framework claude --case-id FIN-021
-```
+本项目采用 [MIT License](./LICENSE)。第三方依赖保留各自许可。
 
-## Spike 证据边界
+---
 
-- `evals/finance_v0.2.jsonl` 是按冻结合同维护的 69 条基线：17 条经 Henson 复核的
-  `user_provided_redacted`、51 条 synthetic、1 条 PRD example。每条都用生成的工具
-  schema 校验；缺个人/家庭归属一律追问、外币由服务端换算、多笔在 batch 关闭时一笔也不写。
-- `evals/finance_expense_v0.1.jsonl` 保留为 Spike 期历史证据。它的期望包含已被推翻的默认个人
-  归属、外币追问和两次单笔写，不得用于 Phase 1 验收。
-- `user_provided_redacted` 不仅钉死 id 和输入，还用完整 SHA-256 绑定 reference time、
-  prior turns 和 expected output；修改语义必须重新复核并显式更新 witness。
-- 离线 eval 验证的是测试集合同和确定性 policy，不是模型准确率。
-- 当前 Claude 证据是 smoke，不是完整准确率、时延或成本基准。
-- ADK v0.2 是按用户决定在 23/30 时停止的部分运行；结果文件的 `case_count` 反映实际完成数量。
-- 10–20 条经用户复核的脱敏真实表达属于 Phase 1 技术验证，不是 PRD 的前置条件。
-
-## 下一步
-
-下一步按以下顺序进行：
-
-1. 请求 Henson 对 DAL-007–013 第一安全切片的显式实现授权。
-2. 在显式授权前，不运行 provider preflight，不创建 GitHub/Worker/credential
-   等外部资源，不实现 DAL-007+；精确边界始终以 `PROJECT_STATUS.md` 和 `docs/dal/` 台账为准。
-
-## 安全约定
-
-本仓库不保存任何个人健康原始数据、账单导出、私钥、证书、Token、`.env` 文件、服务器备份或生产数据库。所有示例凭证均使用占位符。
+文档整理：2026-09-22。公开的是项目实现与设计经验，不是生产可用性或完整复现的承诺。

@@ -193,7 +193,7 @@ for blocked_path in \
 done
 
 # --- the personal site must still be reachable -----------------------------------
-SITE_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://zhuyawei.com)"
+SITE_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://example.invalid)"
 if [ "$SITE_CODE" = 200 ]; then
   pass "personal site still 200"
 else
