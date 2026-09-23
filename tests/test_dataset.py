@@ -1,10 +1,16 @@
 from pathlib import Path
 
+import pytest
+
 from personal_agent_spike.contracts import load_eval_cases
 from personal_agent_spike.offline_eval import evaluate_expected_calls
 
 
 DATASET = Path("evals/finance_expense_v0.1.jsonl")
+pytestmark = pytest.mark.skipif(
+    not DATASET.exists(),
+    reason="historical private Spike dataset is excluded from the public release",
+)
 
 
 def test_dataset_has_30_unique_cases() -> None:

@@ -4,8 +4,9 @@ permissions:
   contents: read
 jobs:
   python:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # DAL worker tests exercise macOS sandbox-exec and boot identity.
+    runs-on: macos-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
