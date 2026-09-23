@@ -1,5 +1,7 @@
 # Personal Agent
 
+**语言 / Language：** [简体中文](./README.md) · [English](./README.en.md)
+
 > 本地开源准备候选，尚未定版或发布。数据公开边界与未完成验证见[验证说明](docs/verification.md)。
 
 
