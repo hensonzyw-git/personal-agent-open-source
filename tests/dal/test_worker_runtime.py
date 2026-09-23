@@ -35,6 +35,7 @@ from sqlalchemy import inspect, text
 from personal_agent_core.timeutil import utc_now
 from personal_agent_dal.storage import db
 from personal_agent_dal.storage.engine import create_database_engine
+from personal_agent_dal.storage.worker_models import WorkerJob
 from personal_agent_dal.worker import checkpoint as checkpoint_mod
 from personal_agent_dal.worker import queue
 from personal_agent_dal.worker import toolchain
@@ -1063,17 +1064,7 @@ def test_poll_once_restores_nonempty_patch_after_supervisor_crash(
         "p=Path('README.md'); p.write_text(p.read_text()+'branch-only change\\n')",
     )
     base_sha = _make_synthetic_repo(repo, format_cmd=format_cmd)
-    _seed_job_for(engine, base_sha)
-    config = WorkerConfig(
-        worker_id=config.worker_id,
-        transport=config.transport,
-        worktree_root=config.worktree_root,
-        checkpoint_root=config.checkpoint_root,
-        kill_switch_path=config.kill_switch_path,
-        lease_ttl_seconds=1,
-        max_attempts=config.max_attempts,
-        repos=config.repos,
-    )
+    job_id = _seed_job_for(engine, base_sha)
     original_write = checkpoint_mod.write_checkpoint
 
     # KeyboardInterrupt is a deterministic proxy for the crash boundary this
@@ -1110,7 +1101,15 @@ def test_poll_once_restores_nonempty_patch_after_supervisor_crash(
         ["git", "-C", str(worktree), "checkout", "--", "README.md"], check=True
     )
     monkeypatch.setattr(checkpoint_mod, "write_checkpoint", original_write)
-    time.sleep(1.1)
+    # Advance the lease clock directly instead of waiting for a wall-clock TTL.
+    # The normal second poll still owns the reclaim-and-resume path; this only
+    # makes the simulated supervisor crash deterministic on slow CI runners.
+    with engine.begin() as connection:
+        connection.execute(
+            WorkerJob.__table__.update()
+            .where(WorkerJob.job_id == job_id)
+            .values(lease_expires_at=utc_now() - timedelta(seconds=1))
+        )
 
     outcome = _poll(engine, config)
 
