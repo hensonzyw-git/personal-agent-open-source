@@ -1,0 +1,52 @@
+{
+  "authority_coverage": {
+    "fixture_catalog_entry_present": true,
+    "operation_oracle_authority": true,
+    "test_manifest_authority": true,
+    "test_manifest_row_present": true,
+    "transition_oracle_authority": false
+  },
+  "environment": {
+    "architecture": "arm64",
+    "os": "darwin",
+    "python_version": "3.12.14",
+    "runner": "scripts/generate_dal_wave3_artifact_receipts.py"
+  },
+  "environment_digest": "33a170b94643177e34f5d809724b820aeb24602fb8c74e0c999f03cd18494205",
+  "fixture_ref": "dal.fixture/DAL-T-REVIEW-INDEP-001/same_independence_key/G3/1.0",
+  "fixture_sha256": "5a7ab63145ac3183a88016aafb14446a6489585a0c34d2b7ea5715f96f573620",
+  "implementation_paths": [
+    "docs/dal/build_contract_manifests.py",
+    "docs/dal/dal_jcs.py",
+    "docs/dal/verify_transition_oracle_authority.py",
+    "docs/dal/verify_operation_oracle_authority.py",
+    "docs/dal/verify_test_manifest_authority.py",
+    "docs/dal/verify_eval_schema_authority.py",
+    "scripts/generate_dal_wave3_artifact_receipts.py",
+    "scripts/verify_dal_artifact_receipts.py",
+    "tests/dal/contract_loader.py"
+  ],
+  "implementation_sha": "7b1517f0d163e41bd9fd0578004f8344b12c92b2",
+  "manifest_row_sha256": "f1e8b69213715ff3a5dc2f07196deb46b7ea80f0d4173cfa813bae6c1bb3b8b0",
+  "manifest_sha256": "e4b33c8ff17779e5af08bd5a74527ac1d0b39b576de4ad6de0ea412cc149c549",
+  "oracle_id": "dal.oracle/DAL-T-REVIEW-INDEP-001/same_independence_key/G3/1.0",
+  "oracle_sha256": "98e6e818dafd1e0cfe095f93021c25a973edc71c34daedba9bfdc2c6335983f0",
+  "owner_tasks_sha256": "4e362af0ed3280a3c13b6f6ce3651eb2b10a27706f0050e09d5a4607d0a259b3",
+  "rebuild": {
+    "authorities_verified": [
+      "transition-oracle-authority_v1.0.json",
+      "operation-oracle-authority_v1.0.json",
+      "test-manifest-authority_v1.0.json",
+      "eval-schema-authority_v1.0.json"
+    ],
+    "drift": "none",
+    "generator": "docs/dal/build_contract_manifests.py",
+    "scope_files": 20
+  },
+  "recorded_at": "2026-09-23T04:28:14Z",
+  "run_gate": "G3",
+  "schema_version": "dal.artifact-rebuild-receipt/1.0",
+  "status": "REBUILT",
+  "test_id": "DAL-T-REVIEW-INDEP-001",
+  "variant_id": "same_independence_key"
+}

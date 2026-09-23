@@ -1,0 +1,52 @@
+{
+  "authority_coverage": {
+    "fixture_catalog_entry_present": true,
+    "operation_oracle_authority": true,
+    "test_manifest_authority": true,
+    "test_manifest_row_present": true,
+    "transition_oracle_authority": false
+  },
+  "environment": {
+    "architecture": "arm64",
+    "os": "darwin",
+    "python_version": "3.12.14",
+    "runner": "scripts/generate_dal_wave3_artifact_receipts.py"
+  },
+  "environment_digest": "33a170b94643177e34f5d809724b820aeb24602fb8c74e0c999f03cd18494205",
+  "fixture_ref": "dal.fixture/DAL-T-REVIEW-INDEP-001/live_fresh/G4/1.0",
+  "fixture_sha256": "85d928576f38bf0efe097e08df9df4f7cc879ebbe4d516943fc79334275f473c",
+  "implementation_paths": [
+    "docs/dal/build_contract_manifests.py",
+    "docs/dal/dal_jcs.py",
+    "docs/dal/verify_transition_oracle_authority.py",
+    "docs/dal/verify_operation_oracle_authority.py",
+    "docs/dal/verify_test_manifest_authority.py",
+    "docs/dal/verify_eval_schema_authority.py",
+    "scripts/generate_dal_wave3_artifact_receipts.py",
+    "scripts/verify_dal_artifact_receipts.py",
+    "tests/dal/contract_loader.py"
+  ],
+  "implementation_sha": "7b1517f0d163e41bd9fd0578004f8344b12c92b2",
+  "manifest_row_sha256": "7379a593c0ba142d48596f3a50342903c757b920119c23fe81787f13e6695884",
+  "manifest_sha256": "e4b33c8ff17779e5af08bd5a74527ac1d0b39b576de4ad6de0ea412cc149c549",
+  "oracle_id": "dal.oracle/DAL-T-REVIEW-INDEP-001/live_fresh/G4/1.0",
+  "oracle_sha256": "b2436c8b6b288355a506974b6fc64592730da851e3f6def534ef575e271512bb",
+  "owner_tasks_sha256": "4e362af0ed3280a3c13b6f6ce3651eb2b10a27706f0050e09d5a4607d0a259b3",
+  "rebuild": {
+    "authorities_verified": [
+      "transition-oracle-authority_v1.0.json",
+      "operation-oracle-authority_v1.0.json",
+      "test-manifest-authority_v1.0.json",
+      "eval-schema-authority_v1.0.json"
+    ],
+    "drift": "none",
+    "generator": "docs/dal/build_contract_manifests.py",
+    "scope_files": 20
+  },
+  "recorded_at": "2026-09-23T04:28:14Z",
+  "run_gate": "G4",
+  "schema_version": "dal.artifact-rebuild-receipt/1.0",
+  "status": "REBUILT",
+  "test_id": "DAL-T-REVIEW-INDEP-001",
+  "variant_id": "live_fresh"
+}

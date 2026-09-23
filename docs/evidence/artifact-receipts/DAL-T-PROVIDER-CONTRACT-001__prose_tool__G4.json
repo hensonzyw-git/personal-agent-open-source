@@ -1,0 +1,52 @@
+{
+  "authority_coverage": {
+    "fixture_catalog_entry_present": true,
+    "operation_oracle_authority": true,
+    "test_manifest_authority": true,
+    "test_manifest_row_present": true,
+    "transition_oracle_authority": false
+  },
+  "environment": {
+    "architecture": "arm64",
+    "os": "darwin",
+    "python_version": "3.12.14",
+    "runner": "scripts/generate_dal_wave3_artifact_receipts.py"
+  },
+  "environment_digest": "33a170b94643177e34f5d809724b820aeb24602fb8c74e0c999f03cd18494205",
+  "fixture_ref": "dal.fixture/DAL-T-PROVIDER-CONTRACT-001/prose_tool/G4/1.0",
+  "fixture_sha256": "648c28d63a486b230edc9588148bcc8b5e2090945b4a5c3a0e40856d54f3b146",
+  "implementation_paths": [
+    "docs/dal/build_contract_manifests.py",
+    "docs/dal/dal_jcs.py",
+    "docs/dal/verify_transition_oracle_authority.py",
+    "docs/dal/verify_operation_oracle_authority.py",
+    "docs/dal/verify_test_manifest_authority.py",
+    "docs/dal/verify_eval_schema_authority.py",
+    "scripts/generate_dal_wave3_artifact_receipts.py",
+    "scripts/verify_dal_artifact_receipts.py",
+    "tests/dal/contract_loader.py"
+  ],
+  "implementation_sha": "7b1517f0d163e41bd9fd0578004f8344b12c92b2",
+  "manifest_row_sha256": "5498cdf79af3e51ecfddb59f8d6676ac526ade4db20759e6f40560dd495e22f0",
+  "manifest_sha256": "e4b33c8ff17779e5af08bd5a74527ac1d0b39b576de4ad6de0ea412cc149c549",
+  "oracle_id": "dal.oracle/DAL-T-PROVIDER-CONTRACT-001/prose_tool/G4/1.0",
+  "oracle_sha256": "ebdc99cb34bbecabedabe72597be6cb2313e9cab8e8ac4fdef03f59df1b38767",
+  "owner_tasks_sha256": "b0f902f16a87414d7393f2fa5a1f3153b98c87d2a16f813e1dc0946ccb98b78c",
+  "rebuild": {
+    "authorities_verified": [
+      "transition-oracle-authority_v1.0.json",
+      "operation-oracle-authority_v1.0.json",
+      "test-manifest-authority_v1.0.json",
+      "eval-schema-authority_v1.0.json"
+    ],
+    "drift": "none",
+    "generator": "docs/dal/build_contract_manifests.py",
+    "scope_files": 20
+  },
+  "recorded_at": "2026-09-23T04:28:14Z",
+  "run_gate": "G4",
+  "schema_version": "dal.artifact-rebuild-receipt/1.0",
+  "status": "REBUILT",
+  "test_id": "DAL-T-PROVIDER-CONTRACT-001",
+  "variant_id": "prose_tool"
+}
