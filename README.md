@@ -92,6 +92,7 @@ flowchart LR
 
 | 阅读角度 | 文章 |
 | --- | --- |
+| 开源公告 | [我把 Personal Agent 开源了：这次公开了什么](https://zhuyawei.com/blog/personal-agent-open-source/) |
 | 项目起点 | [我为什么决定把业余时间 all in 到一个大项目：Personal Agent](https://zhuyawei.com/blog/all-in-personal-agent/) |
 | 一期复盘 | [用 Vibe Coding 完成 Personal Agent 一期](https://zhuyawei.com/blog/personal-agent-phase-one/) |
 | 架构取舍 | [通用 Harness 开源之后：Personal Agent 还必须自己负责什么？](https://zhuyawei.com/blog/harness-governance-scar-tissue/) |

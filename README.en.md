@@ -88,10 +88,11 @@ The table separates what is in this source snapshot from historical runtime evid
 
 ## Related posts
 
-The repository docs explain how the system works. My [blog](https://zhuyawei.com/blog/) covers why I built it and the trade-offs along the way. The posts below are in Chinese.
+The repository docs explain how the system works. My [blog](https://zhuyawei.com/blog/) covers why I built it and the trade-offs along the way. The open-source announcement is available in English; the other links below lead to Chinese posts.
 
 | Topic | Post |
 | --- | --- |
+| Open-source announcement | [I Open-Sourced Personal Agent: What Is Included](https://zhuyawei.com/en/blog/personal-agent-open-source/) |
 | Starting point | [Why I decided to go all in on a side project: Personal Agent](https://zhuyawei.com/blog/all-in-personal-agent/) |
 | Phase-one retrospective | [Building phase one of Personal Agent with vibe coding](https://zhuyawei.com/blog/personal-agent-phase-one/) |
 | Architecture choices | [After generic harnesses became open source: what must Personal Agent still own?](https://zhuyawei.com/blog/harness-governance-scar-tissue/) |
