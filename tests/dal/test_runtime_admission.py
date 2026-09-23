@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import sys
 import time
 import pytest
 from tests.dal.test_trusted_runtime import world, runtime
@@ -29,7 +28,10 @@ def admission(runtime,tmp_path,monkeypatch):
     # Sandbox denies kern.bootsessionuuid; mock OS identity, never admission.
     monkeypatch.setattr('personal_agent_dal.worker.supervisor.current_boot_id',lambda:'boot')
     identity=dict(k['identity'],boot_id=os_boot_id())
-    binary=Path(sys.executable).resolve()
+    # This is an inert CLI identity for a plan that never invokes a provider.
+    # The CI Python framework binary may be group-writable and is correctly
+    # refused by the production executable-protection check.
+    binary=Path('/bin/echo')
     pins=[dict(role=name,configuration=conf,executable=str(binary),version='offline-schema-fixture',
         executable_sha256=hashlib.sha256(binary.read_bytes()).hexdigest()) for name,conf in c['snapshot']['roles'].items()]
     adapters={'schema':'dal.role-adapters/1.0','roles':{name:dict(mode='codex_login',home=str(tmp_path/'unread-login'),environment={}) for name in c['snapshot']['roles']}}

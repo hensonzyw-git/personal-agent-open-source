@@ -5,7 +5,6 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
-import sys
 
 import pytest
 from personal_agent_dal.machine.workflow_selection import digest
@@ -32,7 +31,7 @@ def route_world(tmp_path):
         for name in ('planner','coder')})
     config['roles']['reviewer'] = route
     body = new_snapshot()
-    binary = Path(sys.executable).resolve()
+    binary = Path('/bin/echo')  # Inert, protected fake CLI; never executed.
     pins = [dict(role=name, configuration=value, executable=str(binary),
         version='2.1.231' if name=='reviewer' else 'synthetic',
         executable_sha256=hashlib.sha256(binary.read_bytes()).hexdigest())

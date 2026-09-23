@@ -63,7 +63,7 @@ def test_bounded_inventory_pagination(runtime):
 def test_closed_public_auth_plan_no_login_read(runtime,tmp_path,monkeypatch):
     t,l,c,s,k=runtime
     reservation=s.reserve(attempt_id='plans',workspace_id='plans',generation=1,authority={},read_roots=[])
-    binary=Path(sys.executable).resolve()
+    binary=Path('/bin/echo')  # Inert, protected fake CLI; never executed.
     pins=[dict(role=r,configuration=conf,executable=str(binary),executable_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),version='fixture-python') for r,conf in c['snapshot']['roles'].items()]
     body={'schema':'dal.role-adapters/1.0','roles':{r:{'mode':'codex_login','home':str(tmp_path/'DO-NOT-READ-login'),'environment':{}} for r in c['snapshot']['roles']}}
     config_path=tmp_path/'public-adapters.json';config_path.write_text(json.dumps(body))
@@ -171,7 +171,7 @@ def test_v3_coder_has_no_git_metadata_write_root(runtime):
     t,l,c,s,k=runtime
     reservation=s.reserve(attempt_id='v3-plan',workspace_id='v3-plan',generation=1,authority={},read_roots=[])
     body=config();snapshot=dict(body,digest=digest(body),source='system')
-    binary=Path(sys.executable).resolve()
+    binary=Path('/bin/echo')  # Inert, protected fake CLI; never executed.
     pins=[dict(schema='dal.runtime-pin/3.0',role=role,configuration=configuration,
         runtime='codex_cli',provider='openai',executable=str(binary),
         executable_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),version='synthetic')

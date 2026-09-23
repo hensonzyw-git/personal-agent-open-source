@@ -4,7 +4,6 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
-import sys
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from personal_agent.auth.device_keys import encode_device_public_key
@@ -151,7 +150,7 @@ def test_business_symlinks_scoped_control_strict(tmp_path):
 def test_role_plan_scratch_and_exact_product_models(runtime):
     t,l,c,s,k=runtime
     r=s.reserve(attempt_id='planning',workspace_id='planning',generation=1,authority={},read_roots=[])
-    executable=str(Path(sys.executable).resolve());sha=hashlib.sha256(Path(executable).read_bytes()).hexdigest()
+    executable='/bin/echo';sha=hashlib.sha256(Path(executable).read_bytes()).hexdigest()
     pins=[dict(role=role,configuration=config,executable=executable,executable_sha256=sha,version='fixture-pin') for role,config in c['snapshot']['roles'].items()]
     for role,model in [('planner','gpt-6-astra'),('coder','gpt-5.6-sol'),('reviewer','gpt-6-astra')]:
         plan=build_plan(dict(c,execution_role=role),r,pins)
