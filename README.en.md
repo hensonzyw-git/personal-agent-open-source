@@ -2,9 +2,9 @@
 
 **Language / 语言:** [English](./README.en.md) · [简体中文](./README.md)
 
-> Local open-source release candidate; not yet finalized or published. See the [verification notes](./docs/verification.md) (Chinese) for disclosure boundaries and unfinished checks.
+> Local open-source release candidate; not yet finalized or published. See the [verification notes](./docs/verification.en.md) for disclosure boundaries and unfinished checks.
 
-> This version comes from a fixed private development baseline as of 2026-09-23. Historical evidence from the live environment is recorded separately from verification of this public-source snapshot. The complete mobile-to-delivery development workflow has not been accepted in this round. See the [verification notes](./docs/verification.md) (Chinese).
+> This version comes from a fixed private development baseline as of 2026-09-23. Historical evidence from the live environment is recorded separately from verification of this open-source release candidate. The complete mobile-to-delivery development workflow has not been accepted in this round. See the [verification notes](./docs/verification.en.md).
 
 **A personal agent built by a product manager with vibe coding: connecting personal data, performing governed actions, and exploring an auditable development loop.**
 
